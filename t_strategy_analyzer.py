@@ -498,7 +498,7 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
             ft_rate = round(ft_wins / ft_total * 100, 1) if ft_total > 0 else 0
             ft_avg_fwd = round(sum(s["信号后涨幅%"] for s in ft_signals) / ft_total, 2) if ft_total > 0 else 0
 
-            # 技术指标分布统计
+            # ── 技术指标分布统计 ──
             zt_macd_dist = {}
             ft_macd_dist = {}
             for s in zt_signals:
@@ -508,6 +508,69 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
                 d = s.get("MACD方向", "N/A")
                 ft_macd_dist[d] = ft_macd_dist.get(d, 0) + 1
 
+            # ── 量能辅助分析 ──
+            # 按成交量状态分组看胜率
+            zt_vol_breakdown = {}
+            ft_vol_breakdown = {}
+            for s in zt_signals:
+                v = s.get("成交量", "N/A")
+                if v not in zt_vol_breakdown:
+                    zt_vol_breakdown[v] = {"count": 0, "wins": 0}
+                zt_vol_breakdown[v]["count"] += 1
+                if s["是否获胜"] == "是":
+                    zt_vol_breakdown[v]["wins"] += 1
+            for s in ft_signals:
+                v = s.get("成交量", "N/A")
+                if v not in ft_vol_breakdown:
+                    ft_vol_breakdown[v] = {"count": 0, "wins": 0}
+                ft_vol_breakdown[v]["count"] += 1
+                if s["是否获胜"] == "是":
+                    ft_vol_breakdown[v]["wins"] += 1
+
+            zt_vol_rates = {}
+            for v, d in zt_vol_breakdown.items():
+                zt_vol_rates[v] = {
+                    "次数": d["count"],
+                    "胜率%": round(d["wins"] / d["count"] * 100, 1)
+                }
+            ft_vol_rates = {}
+            for v, d in ft_vol_breakdown.items():
+                ft_vol_rates[v] = {
+                    "次数": d["count"],
+                    "胜率%": round(d["wins"] / d["count"] * 100, 1)
+                }
+
+            # ── 背离辅助分析 ──
+            zt_div_breakdown = {}
+            ft_div_breakdown = {}
+            for s in zt_signals:
+                dv = s.get("背离", "无")
+                if dv not in zt_div_breakdown:
+                    zt_div_breakdown[dv] = {"count": 0, "wins": 0}
+                zt_div_breakdown[dv]["count"] += 1
+                if s["是否获胜"] == "是":
+                    zt_div_breakdown[dv]["wins"] += 1
+            for s in ft_signals:
+                dv = s.get("背离", "无")
+                if dv not in ft_div_breakdown:
+                    ft_div_breakdown[dv] = {"count": 0, "wins": 0}
+                ft_div_breakdown[dv]["count"] += 1
+                if s["是否获胜"] == "是":
+                    ft_div_breakdown[dv]["wins"] += 1
+
+            zt_div_rates = {}
+            for dv, d in zt_div_breakdown.items():
+                zt_div_rates[dv] = {
+                    "次数": d["count"],
+                    "胜率%": round(d["wins"] / d["count"] * 100, 1)
+                }
+            ft_div_rates = {}
+            for dv, d in ft_div_breakdown.items():
+                ft_div_rates[dv] = {
+                    "次数": d["count"],
+                    "胜率%": round(d["wins"] / d["count"] * 100, 1)
+                }
+
             period_result[f"threshold_{threshold}"] = {
                 "正T": {
                     "信号次数": zt_total,
@@ -515,7 +578,9 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
                     "胜率%": zt_rate,
                     "平均信号后收益%": zt_avg_fwd,
                     "MACD分布": zt_macd_dist,
-                    "信号详情": zt_signals[:10],  # 只保留前10条详情
+                    "量能分布": zt_vol_rates,
+                    "背离分布": zt_div_rates,
+                    "信号详情": zt_signals[:10],
                 },
                 "反T": {
                     "信号次数": ft_total,
@@ -523,6 +588,8 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
                     "胜率%": ft_rate,
                     "平均信号后收益%": ft_avg_fwd,
                     "MACD分布": ft_macd_dist,
+                    "量能分布": ft_vol_rates,
+                    "背离分布": ft_div_rates,
                     "信号详情": ft_signals[:10],
                 },
             }
@@ -864,6 +931,50 @@ def generate_t_excel(intraday_result: Dict, swing_result: Dict, stock_name: str,
                     ])
             sheets_xml.append(_build_sheet_xml(f"波段{period}日", detail_headers, detail_rows, detail_widths))
             sheet_names.append(f"波段{period}日")
+
+        # ═══ 量能分析：按成交量状态分组看胜率 ═══
+        vol_rows = []
+        vol_headers = ["周期", "方向", "阈值%", "量能状态", "次数", "胜率%"]
+        vol_widths = [8, 8, 8, 10, 8, 8]
+        for period in SWING_PERIODS:
+            period_data = swing_result.get(period, {})
+            for th in SWING_THRESHOLDS:
+                td = period_data.get(f"threshold_{th}", {})
+                for direction in ["正T", "反T"]:
+                    dd = td.get(direction, {})
+                    vol_dist = dd.get("量能分布", {})
+                    for vol_status, info in sorted(vol_dist.items()):
+                        vol_rows.append([
+                            f"{period}日", direction, th,
+                            vol_status,
+                            info.get("次数", 0),
+                            info.get("胜率%", 0),
+                        ])
+        if vol_rows:
+            sheets_xml.append(_build_sheet_xml("量能分析", vol_headers, vol_rows, vol_widths))
+            sheet_names.append("量能分析")
+
+        # ═══ 背离分析：按背离类型分组看胜率 ═══
+        div_rows = []
+        div_headers = ["周期", "方向", "阈值%", "背离类型", "次数", "胜率%"]
+        div_widths = [8, 8, 8, 10, 8, 8]
+        for period in SWING_PERIODS:
+            period_data = swing_result.get(period, {})
+            for th in SWING_THRESHOLDS:
+                td = period_data.get(f"threshold_{th}", {})
+                for direction in ["正T", "反T"]:
+                    dd = td.get(direction, {})
+                    div_dist = dd.get("背离分布", {})
+                    for div_type, info in sorted(div_dist.items()):
+                        div_rows.append([
+                            f"{period}日", direction, th,
+                            div_type,
+                            info.get("次数", 0),
+                            info.get("胜率%", 0),
+                        ])
+        if div_rows:
+            sheets_xml.append(_build_sheet_xml("背离分析", div_headers, div_rows, div_widths))
+            sheet_names.append("背离分析")
 
     # ── 构建多sheet workbook ──
     sheet_refs = '\n'.join(
@@ -1227,7 +1338,7 @@ def generate_current_signal_excel(
 
     # ── 信号详情表 ──
     sig_headers = ["周期", "方向", "区间涨跌幅%", "触发阈值%", "信号类型", "建议操作",
-                   "历史胜率%", "历史信号次数", "MACD", "RSI", "成交量", "背离"]
+                   "历史胜率%", "历史信号次数", "MACD", "RSI", "量能", "背离"]
     sig_widths = [8, 8, 14, 12, 10, 14, 12, 14, 12, 8, 8, 8]
     sig_rows = []
     for s in signal_result.get("信号", []):

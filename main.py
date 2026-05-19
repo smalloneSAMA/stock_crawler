@@ -47,6 +47,7 @@ from t_strategy_analyzer import (
     analyze_current_swing_signal,
     generate_t_excel,
     generate_current_signal_excel,
+    SWING_PERIODS,
 )
 
 
@@ -331,6 +332,48 @@ def main():
                 for s in summary:
                     print(f"    {s['周期']}日周期: 正T@{s['最佳正T阈值%']}%({s['正T胜率%']}%)  "
                           f"反T@{s['最佳反T阈值%']}%({s['反T胜率%']}%)")
+
+                # ── 量能/背离辅助分析提示 ──
+                # 取每个周期最佳阈值的量能和背离分布做示例
+                for period in SWING_PERIODS:
+                    pd = swing_result.get(period, {})
+                    for s_item in summary:
+                        if s_item["周期"] == period:
+                            best_zt_th = s_item["最佳正T阈值%"]
+                            best_ft_th = s_item["最佳反T阈值%"]
+                            break
+                    # 正T量能分析
+                    if best_zt_th > 0:
+                        zt_td = pd.get(f"threshold_{best_zt_th}", {})
+                        zt_vol = zt_td.get("正T", {}).get("量能分布", {})
+                        zt_div = zt_td.get("正T", {}).get("背离分布", {})
+                        vol_parts = []
+                        for v, info in sorted(zt_vol.items()):
+                            vol_parts.append(f"{v}:{info['胜率%']}%({info['次数']}次)")
+                        div_parts = []
+                        for dv, info in sorted(zt_div.items()):
+                            if dv != "无":
+                                div_parts.append(f"{dv}:{info['胜率%']}%({info['次数']}次)")
+                        if vol_parts:
+                            print(f"    {period}日正T量能: {' | '.join(vol_parts)}")
+                        if div_parts:
+                            print(f"    {period}日正T背离: {' | '.join(div_parts)}")
+                    # 反T量能分析
+                    if best_ft_th > 0:
+                        ft_td = pd.get(f"threshold_{best_ft_th}", {})
+                        ft_vol = ft_td.get("反T", {}).get("量能分布", {})
+                        ft_div = ft_td.get("反T", {}).get("背离分布", {})
+                        vol_parts = []
+                        for v, info in sorted(ft_vol.items()):
+                            vol_parts.append(f"{v}:{info['胜率%']}%({info['次数']}次)")
+                        div_parts = []
+                        for dv, info in sorted(ft_div.items()):
+                            if dv != "无":
+                                div_parts.append(f"{dv}:{info['胜率%']}%({info['次数']}次)")
+                        if vol_parts:
+                            print(f"    {period}日反T量能: {' | '.join(vol_parts)}")
+                        if div_parts:
+                            print(f"    {period}日反T背离: {' | '.join(div_parts)}")
             else:
                 print(f"  [波段T] 数据不足(需≥60条)")
 
