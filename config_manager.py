@@ -98,8 +98,58 @@ def load_config_full(config_path: str):
     for key in ["t_analysis_date"]:
         if key in raw:
             global_config[key] = raw[key]
+            # 解析为日期列表
+            global_config["_t_dates"] = parse_analysis_dates(raw[key])
 
     return validated, global_config
+
+
+def parse_analysis_dates(raw_value) -> List[str]:
+    """
+    解析 t_analysis_date 配置，返回日期字符串列表
+
+    支持格式：
+      - 单个日期: "2026-05-19"
+      - 日期范围: "2026-01-01~2026-01-31" 或 "2026-01-01 ~ 2026-01-31"
+      - 日期列表: ["2026-01-01", "2026-01-15"]
+    """
+    if raw_value is None:
+        return []
+
+    # 列表格式
+    if isinstance(raw_value, list):
+        return [str(d).strip() for d in raw_value if str(d).strip()]
+
+    # 字符串格式
+    s = str(raw_value).strip()
+    if not s:
+        return []
+
+    # 范围格式: "2026-01-01~2026-01-31"
+    from datetime import datetime, timedelta
+    for sep in ["~", "～"]:
+        if sep in s:
+            parts = s.split(sep)
+            if len(parts) == 2:
+                a, b = parts[0].strip(), parts[1].strip()
+                if a and b:
+                    try:
+                        sd = datetime.strptime(a, "%Y-%m-%d")
+                        ed = datetime.strptime(b, "%Y-%m-%d")
+                        if sd > ed:
+                            sd, ed = ed, sd
+                        dates = []
+                        cur = sd
+                        while cur <= ed:
+                            dates.append(cur.strftime("%Y-%m-%d"))
+                            cur += timedelta(days=1)
+                        return dates
+                    except ValueError:
+                        pass
+            break
+
+    # 单个日期
+    return [s]
 
 
 def print_config_list(configs: List[Dict]) -> None:

@@ -1060,7 +1060,7 @@ def _build_tech_comment(tech: Dict) -> str:
     parts.append(f"量:{tech.get('成交量','N/A')}")
     div = tech.get("背离", "无")
     if div != "无":
-        parts.append(f"⚠{div}")
+        parts.append(f"[!]{div}")
     return " | ".join(parts)
 
 
@@ -1426,6 +1426,200 @@ def generate_current_signal_excel(
 
     # ── 打包 ──
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    def _try_write(path):
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('[Content_Types].xml', content_types_xml.encode('utf-8'))
+            zf.writestr('_rels/.rels', root_rels_xml.encode('utf-8'))
+            zf.writestr('xl/workbook.xml', workbook_xml.encode('utf-8'))
+            zf.writestr('xl/_rels/workbook.xml.rels', workbook_rels_xml.encode('utf-8'))
+            for i, sheet_xml in enumerate(sheets_xml):
+                zf.writestr(f'xl/worksheets/sheet{i+1}.xml', sheet_xml.encode('utf-8'))
+            zf.writestr('xl/styles.xml', styles_xml.encode('utf-8'))
+
+    try:
+        _try_write(output_path)
+    except PermissionError:
+        import time
+        base, ext = os.path.splitext(output_path)
+        fallback = f"{base}_{int(time.time())}{ext}"
+        print(f"  [注意] Excel文件被占用，另存为: {os.path.basename(fallback)}")
+        _try_write(fallback)
+        output_path = fallback
+
+    return os.path.abspath(output_path)
+
+
+# ════════════════════════════════════════════════════════════════
+#  六、合并多日期波段T信号 Excel
+# ════════════════════════════════════════════════════════════════
+
+def generate_consolidated_signal_excel(
+    all_signals: List[Dict],
+    all_dates: List[str],
+    stock_name: str,
+    stock_code: str,
+    output_path: str,
+) -> str:
+    """
+    生成合并的多日期波段T信号分析 Excel
+
+    Sheet结构:
+      - 汇总对比: 所有日期的信号概览表
+      - 逐日详情: 每个日期独立一个Sheet
+      - 解读说明: 策略说明
+    """
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="10"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><name val="Microsoft YaHei"/></font>
+  </fonts>
+  <fills count="4">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9E2F3"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color auto="1"/></left>
+      <right style="thin"><color auto="1"/></right>
+      <top style="thin"><color auto="1"/></top>
+      <bottom style="thin"><color auto="1"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+  </cellXfs>
+</styleSheet>'''
+
+    sheets_xml = []
+    sheet_names = []
+
+    # ── Sheet1: 汇总对比表 ──
+    periods_order = [f"{p}日" for p in SWING_PERIODS]
+    summary_headers = ["分析日期"] + [f"{p}日-涨跌幅%" for p in SWING_PERIODS] \
+                    + [f"{p}日-建议" for p in SWING_PERIODS] \
+                    + ["MACD", "RSI", "量能", "背离", "综合建议"]
+    summary_widths = [14] + [14]*4 + [14]*4 + [12, 8, 8, 8, 30]
+    summary_rows = []
+
+    for i, dt in enumerate(all_dates):
+        sig = all_signals[i] if i < len(all_signals) else None
+        if not sig:
+            continue
+        tech = sig.get("技术指标", {})
+        row = [dt]
+        signal_map = {}
+        for s in sig.get("信号", []):
+            signal_map[s["周期"]] = s
+        for p in periods_order:
+            s = signal_map.get(p, {})
+            row.append(s.get("区间涨跌幅%", ""))
+        for p in periods_order:
+            s = signal_map.get(p, {})
+            row.append(s.get("建议操作", ""))
+        row.extend([
+            tech.get("MACD方向", ""),
+            tech.get("RSI", ""),
+            tech.get("量能", tech.get("成交量", "")),
+            tech.get("背离", ""),
+            sig.get("综合建议", ""),
+        ])
+        summary_rows.append(row)
+
+    sheets_xml.append(_build_sheet_xml("汇总对比", summary_headers, summary_rows, summary_widths))
+    sheet_names.append("汇总对比")
+
+    # ── 后续Sheet: 每个日期单独一个详情 ──
+    for i, dt in enumerate(all_dates):
+        sig = all_signals[i] if i < len(all_signals) else None
+        if not sig:
+            continue
+        info_rows = [
+            ["股票", f"{stock_name}({stock_code})"],
+            ["分析日期", dt],
+            ["数据日期范围", sig.get("数据日期范围", "")],
+            ["综合建议", sig.get("综合建议", "")],
+        ]
+        sheets_xml.append(_build_sheet_xml(dt, ["项目", "内容"], info_rows, [16, 40]))
+        sheet_names.append(dt)
+
+    # ── 最后: 解读说明 ──
+    guide_lines = [
+        f"{stock_name}({stock_code}) 波段T信号分析 (多日期合并)",
+        "=" * 50,
+        "",
+        f"分析日期: {all_dates[0] if all_dates else ''} ~ {all_dates[-1] if all_dates else ''} (共{len(all_dates)}天)",
+        "",
+        "[汇总表解读]",
+        "  每行代表一个分析日期，各列显示对应周期的信号",
+        "  购买(正T) = 当日下跌超过阈值，建议买入后卖出",
+        "  卖出(反T) = 当日上涨超过阈值，建议卖出后买回",
+        "  观望 = 涨跌幅未达阈值，无明显信号",
+        "",
+        "[技术指标]",
+        "  MACD: 金叉向上(多头) / 死叉向下(空头)",
+        "  RSI: >70超买 / <30超卖",
+        "  量能: 放量(>1.5倍均量) / 缩量(<0.7倍) / 正常",
+        "  背离: 顶背离(上涨动能衰竭) / 底背离(下跌动能衰竭)",
+        "",
+        "[注意事项]",
+        "  1. 以上分析基于历史数据，不保证未来表现",
+        "  2. 未考虑交易佣金、印花税等摩擦成本",
+        "  3. 反T需先有持仓或融券，正T需有可用资金",
+    ]
+    sheets_xml.append(_build_text_sheet(guide_lines, col_width=85))
+    sheet_names.append("解读说明")
+
+    # ── 构建workbook ──
+    sheet_refs = '\n'.join(
+        f'    <sheet name="{xml_escape(name)}" sheetId="{i+1}" r:id="rId{i+1}"/>'
+        for i, name in enumerate(sheet_names)
+    )
+    workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+{sheet_refs}
+  </sheets>
+</workbook>'''
+
+    sheet_rels = '\n'.join(
+        f'  <Relationship Id="rId{i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i+1}.xml"/>'
+        for i in range(len(sheet_names))
+    )
+    workbook_rels_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+{sheet_rels}
+  <Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+'''
+    for i in range(len(sheet_names)):
+        content_types_xml += f'  <Override PartName="/xl/worksheets/sheet{i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+    content_types_xml += '</Types>'
+
+    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     def _try_write(path):
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('[Content_Types].xml', content_types_xml.encode('utf-8'))

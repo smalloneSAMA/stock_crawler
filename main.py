@@ -47,6 +47,7 @@ from t_strategy_analyzer import (
     analyze_current_swing_signal,
     generate_t_excel,
     generate_current_signal_excel,
+    generate_consolidated_signal_excel,
     SWING_PERIODS,
 )
 
@@ -87,9 +88,12 @@ def main():
         print(f"[错误] 配置错误: {e}")
         sys.exit(1)
 
-    t_analysis_date = global_config.get("t_analysis_date", "")
-    if t_analysis_date:
-        print(f"[配置] 波段T分析日期: {t_analysis_date}")
+    t_analysis_dates = global_config.get("_t_dates", [])
+    if t_analysis_dates:
+        if len(t_analysis_dates) == 1:
+            print(f"[配置] 波段T分析日期: {t_analysis_dates[0]}")
+        else:
+            print(f"[配置] 波段T分析日期: {t_analysis_dates[0]} ~ {t_analysis_dates[-1]} (共{len(t_analysis_dates)}天)")
 
     print_config_list(configs)
 
@@ -383,42 +387,69 @@ def main():
                              t_output)
             print(f"  [T策略] 已保存: {os.path.abspath(t_output)}")
 
-            # ── 当前波段T信号分析（如果配置了分析日期）──
-            if t_analysis_date and not swing_result.get("数据不足", True):
+            # ── 当前波段T信号分析（多日期支持）──
+            if t_analysis_dates and not swing_result.get("数据不足", True):
                 try:
-                    signal_result = analyze_current_swing_signal(
-                        data, t_analysis_date, swing_result
-                    )
-                    if signal_result:
-                        signal_output = os.path.join(
-                            t_analysis_dir,
-                            config.get("output_file", "report")
-                            .replace(".xlsx", f"_波段T信号_{t_analysis_date}.xlsx"),
-                        )
-                        generate_current_signal_excel(
-                            signal_result,
-                            config.get("stock_name", ""),
-                            config["stock_code"],
-                            signal_output,
-                        )
-                        print(f"  [波段信号] 已保存: {os.path.abspath(signal_output)}")
-                        # 打印技术指标摘要
-                        tech = signal_result.get("技术指标", {})
-                        from t_strategy_analyzer import _build_tech_comment
-                        print(f"  [技术指标] {_build_tech_comment(tech)}")
-                        # 打印推荐摘要
-                        for sig in signal_result.get("信号", []):
-                            action = sig.get("建议操作", "观望")
-                            period = sig.get("周期", "")
-                            direction = sig.get("方向", "")
-                            ret = sig.get("区间涨跌幅%", 0)
-                            rate = sig.get("历史胜率%", 0)
-                            macd = sig.get("MACD", "")
-                            rsi = sig.get("RSI", "")
-                            print(f"    {period}日: {direction} {ret:+.1f}% → {action} "
-                                  f"(胜率{rate}% | MACD:{macd} RSI:{rsi})")
+                    all_signals = []
+                    for dt in t_analysis_dates:
+                        sig = analyze_current_swing_signal(data, dt, swing_result)
+                        if sig:
+                            all_signals.append(sig)
+
+                    if all_signals:
+                        if len(all_signals) == 1:
+                            # 单日期: 生成单个Excel
+                            signal_output = os.path.join(
+                                t_analysis_dir,
+                                config.get("output_file", "report")
+                                .replace(".xlsx", f"_波段T信号_{t_analysis_dates[0]}.xlsx"),
+                            )
+                            generate_current_signal_excel(
+                                all_signals[0],
+                                config.get("stock_name", ""),
+                                config["stock_code"],
+                                signal_output,
+                            )
+                            print(f"  [波段信号] 已保存: {os.path.abspath(signal_output)}")
+                            # 打印技术指标
+                            tech = all_signals[0].get("技术指标", {})
+                            from t_strategy_analyzer import _build_tech_comment
+                            print(f"  [技术指标] {_build_tech_comment(tech)}")
+                            for sig in all_signals[0].get("信号", []):
+                                print(f"    {sig['周期']}日: {sig['方向']} {sig['区间涨跌幅%']:+.1f}% "
+                                      f"→ {sig['建议操作']} (胜率{sig['历史胜率%']}% "
+                                      f"| MACD:{sig['MACD']} RSI:{sig['RSI']})")
+                        else:
+                            # 多日期: 生成合并Excel
+                            date_label = f"{t_analysis_dates[0]}_{t_analysis_dates[-1]}"
+                            consolidated_output = os.path.join(
+                                t_analysis_dir,
+                                config.get("output_file", "report")
+                                .replace(".xlsx", f"_波段T信号_{date_label}.xlsx"),
+                            )
+                            generate_consolidated_signal_excel(
+                                all_signals, t_analysis_dates,
+                                config.get("stock_name", ""),
+                                config["stock_code"],
+                                consolidated_output,
+                            )
+                            print(f"  [波段信号] 合并{len(all_signals)}天分析: "
+                                  f"{os.path.abspath(consolidated_output)}")
+                            # 打印首尾对比
+                            first, last = all_signals[0], all_signals[-1]
+                            ft = first.get("技术指标", {})
+                            lt = last.get("技术指标", {})
+                            print(f"  [首日] {_build_tech_comment(ft)}")
+                            print(f"  [末日] {_build_tech_comment(lt)}")
+                            for i in [0, -1]:
+                                day_sig = all_signals[i]
+                                date_str = t_analysis_dates[i]
+                                actions = [s['建议操作'] for s in day_sig.get('信号', [])]
+                                print(f"  {date_str}: {', '.join(actions)}")
                 except Exception as e2:
                     print(f"  [警告] 当前波段信号分析失败: {e2}")
+                    import traceback
+                    traceback.print_exc()
 
         except Exception as e:
             print(f"  [警告] T策略分析失败: {e}")
