@@ -1505,10 +1505,11 @@ def generate_consolidated_signal_excel(
 
     # ── Sheet1: 汇总对比表 ──
     periods_order = [f"{p}日" for p in SWING_PERIODS]
-    summary_headers = ["分析日期"] + [f"{p}日-涨跌幅%" for p in SWING_PERIODS] \
+    summary_headers = ["分析日期", "收盘价"] \
+                    + [f"{p}日-涨跌幅%" for p in SWING_PERIODS] \
                     + [f"{p}日-建议" for p in SWING_PERIODS] \
-                    + ["MACD", "RSI", "量能", "背离", "综合建议"]
-    summary_widths = [14] + [14]*4 + [14]*4 + [12, 8, 8, 8, 30]
+                    + ["综合胜率%", "MACD", "RSI", "量能", "背离", "综合建议"]
+    summary_widths = [14, 10] + [14]*4 + [14]*4 + [10, 12, 8, 8, 8, 30]
     summary_rows = []
 
     for i, dt in enumerate(all_dates):
@@ -1517,6 +1518,8 @@ def generate_consolidated_signal_excel(
             continue
         tech = sig.get("技术指标", {})
         row = [dt]
+        # 收盘价
+        row.append(tech.get("收盘价", ""))
         signal_map = {}
         for s in sig.get("信号", []):
             signal_map[s["周期"]] = s
@@ -1526,10 +1529,19 @@ def generate_consolidated_signal_excel(
         for p in periods_order:
             s = signal_map.get(p, {})
             row.append(s.get("建议操作", ""))
+        # 综合胜率：取4个周期胜率的均值
+        win_rates = []
+        for p in periods_order:
+            s = signal_map.get(p, {})
+            wr = s.get("历史胜率%", "")
+            if isinstance(wr, (int, float)) and wr != "-":
+                win_rates.append(wr)
+        avg_win = round(sum(win_rates) / len(win_rates), 1) if win_rates else ""
+        row.append(avg_win)
         row.extend([
             tech.get("MACD方向", ""),
             tech.get("RSI", ""),
-            tech.get("量能", tech.get("成交量", "")),
+            tech.get("成交量", ""),
             tech.get("背离", ""),
             sig.get("综合建议", ""),
         ])

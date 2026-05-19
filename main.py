@@ -389,12 +389,22 @@ def main():
 
             # ── 当前波段T信号分析（多日期支持）──
             if t_analysis_dates and not swing_result.get("数据不足", True):
+                from t_strategy_analyzer import _build_tech_comment
+                all_signals = []
                 try:
-                    all_signals = []
-                    for dt in t_analysis_dates:
-                        sig = analyze_current_swing_signal(data, dt, swing_result)
-                        if sig:
-                            all_signals.append(sig)
+                    # 只处理实际交易日（过滤周末/节假日）
+                    actual_dates = sorted(set(r["日期"] for r in data if r.get("日期")))
+                    valid_dates = [d for d in t_analysis_dates if d in actual_dates]
+                    skipped = len(t_analysis_dates) - len(valid_dates)
+                    if skipped:
+                        print(f"  [过滤] 跳过{skipped}个非交易日(周末/节假日)")
+                    if not valid_dates:
+                        print(f"  [警告] 无有效交易日可分析")
+                    else:
+                        for dt in valid_dates:
+                            sig = analyze_current_swing_signal(data, dt, swing_result)
+                            if sig:
+                                all_signals.append(sig)
 
                     if all_signals:
                         if len(all_signals) == 1:
@@ -413,22 +423,21 @@ def main():
                             print(f"  [波段信号] 已保存: {os.path.abspath(signal_output)}")
                             # 打印技术指标
                             tech = all_signals[0].get("技术指标", {})
-                            from t_strategy_analyzer import _build_tech_comment
                             print(f"  [技术指标] {_build_tech_comment(tech)}")
                             for sig in all_signals[0].get("信号", []):
                                 print(f"    {sig['周期']}日: {sig['方向']} {sig['区间涨跌幅%']:+.1f}% "
                                       f"→ {sig['建议操作']} (胜率{sig['历史胜率%']}% "
                                       f"| MACD:{sig['MACD']} RSI:{sig['RSI']})")
                         else:
-                            # 多日期: 生成合并Excel
-                            date_label = f"{t_analysis_dates[0]}_{t_analysis_dates[-1]}"
+                            # 多日期: 生成合并Excel（仅交易日）
+                            date_label = f"{valid_dates[0]}_{valid_dates[-1]}"
                             consolidated_output = os.path.join(
                                 t_analysis_dir,
                                 config.get("output_file", "report")
                                 .replace(".xlsx", f"_波段T信号_{date_label}.xlsx"),
                             )
                             generate_consolidated_signal_excel(
-                                all_signals, t_analysis_dates,
+                                all_signals, valid_dates,
                                 config.get("stock_name", ""),
                                 config["stock_code"],
                                 consolidated_output,
