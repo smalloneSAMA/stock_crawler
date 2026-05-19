@@ -2,14 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-A股股票日K线批量数据抓取工具
+A股股票日K线批量数据抓取 + 分析决策工具
 
-支持在配置文件中配置多只股票，一次运行生成多个 Excel 文件。
+功能：
+  1. 从新浪财经批量抓取 A 股日 K 线数据
+  2. 从东方财富获取财务指标（PE/PB/ROE/每股收益/股息等），逐行填充
+  3. 生成格式化 Excel 文件（原生 XML，无需 openpyxl）
+  4. 自动分析：趋势选时 + 估值定仓 + 波动降本（网格/做T）
 
 用法：
     python main.py                              # 默认 config.json
-    python main.py -c my_config.json            # 自定义配置
-    python main.py -c my_config.json -o 前缀    # 统一输出目录
+    python main.py -c my_config.json            # 自定义配置文件
+    python main.py -c my_config.json -o 目录    # 自定义输出目录
 """
 
 import argparse
@@ -18,15 +22,18 @@ import time
 import sys
 from datetime import datetime
 
+# 将当前目录加入模块搜索路径，方便导入同级 .py 文件
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config_manager import ConfigError, load_config, print_config_list
 from data_fetcher import DataFetchError, fetch_stock_data
 from excel_generator import ExcelGenerateError, generate_excel
 from financial_fetcher import FinancialFetchError, enrich_kline_with_financials
+from stock_analyzer import analyze_and_print
 
 
 def main():
+    # ── 解析命令行参数 ──
     parser = argparse.ArgumentParser(
         description="A股股票日K线批量数据抓取工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -57,14 +64,16 @@ def main():
 
     print_config_list(configs)
 
-    # ── 确定输出目录（默认放在 data/ 子文件夹下）──
+    # ── 确定输出目录 ──
     base_dir = args.output_dir or os.path.dirname(os.path.abspath(args.config))
-    output_dir = os.path.join(base_dir, "data")
-    os.makedirs(output_dir, exist_ok=True)
+    data_dir = os.path.join(base_dir, "data")      # Excel 数据文件存放目录
+    report_dir = os.path.join(base_dir, "output")   # 分析报告存放目录
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(report_dir, exist_ok=True)
 
-    # ── 2. 逐只股票抓取 ──
-    total_ok = 0
-    total_fail = 0
+    # ── 2. 逐只股票抓取 + 分析 ──
+    total_ok = 0    # 成功处理的股票数
+    total_fail = 0  # 失败的股票数
 
     for idx, config in enumerate(configs, 1):
         stock_label = f"{config.get('stock_name', '未知')} ({config['stock_code']})"
@@ -73,7 +82,7 @@ def main():
         print(f"[进度] 第 {idx}/{len(configs)} 只: {stock_label}")
         print(f"{'=' * 50}")
 
-        # ── 2a. 抓取数据 ──
+        # ── 2a. 从新浪 API 抓取日 K 线数据 ──
         try:
             data = fetch_stock_data(config)
         except DataFetchError as e:
@@ -88,7 +97,7 @@ def main():
 
         print(f"[数据] 共获取 {len(data)} 条记录")
 
-        # ── 预览 ──
+        # ── 预览前3条和后2条数据 ──
         print("\n[预览] 前 3 条:")
         for i, row in enumerate(data[:3], 1):
             print(f"  {i}. {row.get('日期','')}  "
@@ -108,7 +117,7 @@ def main():
                       f"收:{row.get('收盘价','')}  "
                       f"涨跌:{row.get('涨跌幅%','')}%")
 
-        # ── 2b. 填充逐行财务指标 ──
+        # ── 2b. 从东方财富获取财务数据，逐行填充 PE/PB/ROE/股息等 ──
         try:
             data = enrich_kline_with_financials(
                 kline_data=data,
@@ -133,16 +142,39 @@ def main():
             if dps is not None and dps != "-":
                 print(f"[分红] 每股股息:{dps}  股息率:{dy}%  分红率:{pr}%")
 
-        # ── 2c. 生成 Excel ──
+        # ── 2c. 运行分析决策（趋势 + 估值 + 波动降本）──
+        print(f"\n{'─' * 50}")
+        print("[分析] 正在生成决策清单...")
+        try:
+            report = analyze_and_print(
+                stock_name=config.get("stock_name", ""),
+                stock_code=config["stock_code"],
+                data=data,
+                analysis_config=config.get("analysis"),
+            )
+            # 分析报告保存到 output 文件夹
+            report_file = os.path.join(
+                report_dir,
+                config.get("output_file", "report").replace(".xlsx", "_分析报告.txt"),
+            )
+            with open(report_file, "w", encoding="utf-8") as f:
+                f.write(report)
+            print(f"[报告] 已保存: {os.path.abspath(report_file)}")
+        except Exception as e:
+            print(f"  [警告] 分析生成失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # ── 2d. 生成 Excel 文件（原生 XML，无需第三方库）──
         base_output = config["output_file"]
-        output_file = os.path.join(output_dir, base_output)
-        # 若文件被占用则尝试加时间戳后缀
+        output_file = os.path.join(data_dir, base_output)
+        # 若文件被占用则加时间戳后缀，避免写入失败
         if os.path.exists(output_file):
             try:
                 os.remove(output_file)
             except PermissionError:
                 name, ext = os.path.splitext(base_output)
-                output_file = os.path.join(output_dir, f"{name}_{int(time.time())}{ext}")
+                output_file = os.path.join(data_dir, f"{name}_{int(time.time())}{ext}")
                 print(f"  [注意] 原文件被占用，另存为: {os.path.basename(output_file)}")
         print(f"\n[生成] 正在生成: {output_file}")
 
@@ -175,7 +207,8 @@ def main():
     print(f"\n{'=' * 50}")
     print(f"[汇总] 全部完成！成功 {total_ok} 只，失败 {total_fail} 只")
     if total_ok > 0:
-        print(f"       输出目录: {os.path.abspath(output_dir)}")
+        print(f"       Excel数据: {os.path.abspath(data_dir)}")
+        print(f"       分析报告: {os.path.abspath(report_dir)}")
     print(f"{'=' * 50}")
 
 

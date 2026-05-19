@@ -1,8 +1,16 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """
 Excel 生成器 —— 用 Python 内置模块原生生成 .xlsx 文件
 
-无需安装 openpyxl。xlsx 本质上是 ZIP 压缩包，内部为 XML 文件，
-本模块直接构造这些 XML 并打包为 .xlsx。
+为什么不用 openpyxl？
+  xlsx 本质上是 ZIP 压缩包，内部为 XML 文件。
+  本模块直接构造这些 XML 并打包为 .xlsx，无需安装任何第三方库。
+
+字段说明：
+  - 前12列为 K 线基础数据
+  - 后9列为财务指标（已由 financial_fetcher 逐行填充）
 """
 
 import os
@@ -17,8 +25,9 @@ class ExcelGenerateError(Exception):
     pass
 
 
-# ── 列定义 ──
+# ── 列定义：header = 列名，width = Excel 列宽 ──
 COLUMN_DEFS = [
+    # === K线基础数据（前12列） ===
     {"header": "日期",          "width": 14},
     {"header": "开盘价",        "width": 12},
     {"header": "最高价",        "width": 12},
@@ -31,6 +40,7 @@ COLUMN_DEFS = [
     {"header": "日内波动区间%",  "width": 14},
     {"header": "上涨幅度%",     "width": 14},
     {"header": "下跌幅度%",     "width": 14},
+    # === 财务指标（后9列） ===
     {"header": "当前市值(亿)",  "width": 14},
     {"header": "市盈率TTM",     "width": 12},
     {"header": "股息率TTM",     "width": 10},
@@ -52,25 +62,13 @@ def _fmt_cell_value(value) -> str:
         return ('', '')
 
     if isinstance(value, str):
-        # 字符串 → 使用共享字符串索引（这里使用内联字符串更简单）
-        # 用 t="inlineStr" 方式
+        # 字符串 → 内联字符串格式
         return ('t="inlineStr"', f"<is><t>{xml_escape(value)}</t></is>")
 
     if isinstance(value, (int, float)):
-        if isinstance(value, float):
-            # 格式化为保留足够精度的数字
-            return ('', f'{value}')
         return ('', f'{value}')
 
     return ('', str(value))
-
-
-def _build_shared_strings(data: List[Dict]) -> List[str]:
-    """收集所有需要共享的字符串（日期作为字符串处理）"""
-    strings = []
-    # 标题行文字会在 sheet 中用 inlineStr，所以不需要共享字符串
-    # 表头也用 inlineStr
-    return strings
 
 
 def generate_excel(
@@ -84,15 +82,15 @@ def generate_excel(
     """
     生成格式化 Excel 文件（原生 XML 方式）
 
-    财务指标字段已经嵌入到每行 data 中（由 enrich_kline_with_financials 填充），
-    因此不再需要单独的 financial_data 参数。
+    财务指标字段已由 enrich_kline_with_financials 嵌入到每行数据中，
+    因此所有列都从每行的 record 中直接读取。
 
     Args:
-        stock_name:  股票名称
-        stock_code:  股票代码
+        stock_name:  股票名称（用于标题行）
+        stock_code:  股票代码（用于标题行）
         start_date:  起始日期
-        end_date:    结束日期
-        data:        已含财务字段的K线数据行列表
+        end_date:    截止日期
+        data:        含财务字段的K线数据列表（最新在前）
         output_path: 输出文件路径
 
     Returns:
@@ -104,7 +102,7 @@ def generate_excel(
     # ── 准备 sheet 数据行 XML ──
     sheet_rows_xml = []
 
-    # 第 1 行：合并标题
+    # 第 1 行：合并标题行
     start_display = start_date if start_date else "最早"
     end_display = end_date if end_date else "最新"
     date_range = f"({start_display} ~ {end_display})"
@@ -130,7 +128,7 @@ def generate_excel(
         f'<row r="2" spans="1:{num_cols}" s="2" ht="24" customHeight="1">{header_cells}</row>'
     )
 
-    # 第 3+ 行：所有数据字段都已嵌入到每行 record 中
+    # 第 3+ 行：数据（所有字段都已嵌入到每行 record 中）
     for row_idx, record in enumerate(data):
         row_num = row_idx + 3
         cells = ''
@@ -141,6 +139,7 @@ def generate_excel(
             raw_val = record.get(header)
 
             if header == "日期" and raw_val:
+                # 日期用内联字符串，显示为文本
                 cells += (
                     f'<c r="{col_letter}{row_num}" s="4" t="inlineStr">'
                     f'<is><t>{xml_escape(str(raw_val))}</t></is>'
@@ -160,9 +159,10 @@ def generate_excel(
             f'<row r="{row_num}" spans="1:{num_cols}" s="3">{cells}</row>'
         )
 
-    # ── 合并单元格信息 ──
+    # ── 合并单元格信息（标题行跨列）──
     merge_cell = f'A1:{col_letters[-1]}1'
 
+    # ── 构建 sheet.xml ──
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -188,7 +188,7 @@ def generate_excel(
   </mergeCells>
 </worksheet>'''
 
-    # ── 样式 XML ──
+    # ── 样式 XML（字体、颜色、边框、对齐）──
     styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="3">
@@ -270,11 +270,11 @@ def generate_excel(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''
 
-    # ── sharedStrings.xml（空，因为使用了 inlineStr） ──
+    # ── sharedStrings.xml（空，因为使用了 inlineStr）──
     shared_strings_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>'''
 
-    # ── 打包 ZIP ──
+    # ── 打包为 ZIP (.xlsx) ──
     try:
         with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('[Content_Types].xml', content_types_xml.encode('utf-8'))
