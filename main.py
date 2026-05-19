@@ -10,6 +10,7 @@ A股股票日K线批量数据抓取 + 分析决策工具
   3. 生成格式化 Excel 文件（原生 XML，无需 openpyxl）
   4. 自动分析：趋势选时 + 估值定仓 + 波动降本（网格/做T）
   5. 智能缓存：已有数据从本地读取，缺失部分才爬取更新
+  6. T策略分析：日内做T + 波段做T 胜率统计（含技术指标），输出独立Excel
 
 用法：
     python main.py                              # 默认 config.json
@@ -39,6 +40,11 @@ from cache_manager import (
     get_date_range,
     needs_fetch,
     merge_data,
+)
+from t_strategy_analyzer import (
+    analyze_intraday_t,
+    analyze_swing_t,
+    generate_t_excel,
 )
 
 
@@ -85,9 +91,11 @@ def main():
     data_dir = os.path.join(base_dir, "data")      # Excel 数据文件存放目录
     cache_dir = os.path.join(base_dir, "cache")     # 缓存数据存放目录
     report_dir = os.path.join(base_dir, "output")   # 分析报告存放目录
+    t_analysis_dir = os.path.join(base_dir, "t_analysis")  # T策略分析报告存放目录
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(report_dir, exist_ok=True)
+    os.makedirs(t_analysis_dir, exist_ok=True)
 
     # ── 2. 逐只股票抓取 + 分析 ──
     total_ok = 0    # 成功处理的股票数
@@ -266,6 +274,70 @@ def main():
         print(f"       交易日数: {len(data)}")
         print(f"       缓存文件: {os.path.abspath(cache_path)}")
 
+        # ── 2e. T策略分析（日内做T + 波段做T）──
+        print(f"\n{'─' * 50}")
+        print("[T策略] 正在分析日内做T及波段做T胜率...")
+        try:
+            raw_code = config["stock_code"].replace(".SZ", "").replace(".SH", "")
+            t_output = os.path.join(
+                t_analysis_dir,
+                config.get("output_file", "report").replace(".xlsx", "_T策略分析.xlsx"),
+            )
+
+            # 日内做T分析
+            intraday_result = analyze_intraday_t(data, max_gradient=10.0, step=0.5)
+            if not intraday_result.get("数据不足", True):
+                bs = intraday_result["基础统计"]
+                print(f"  [日内T] {bs['总交易日']}个交易日, "
+                      f"上涨日{bs['上涨日(收盘>开盘)']}个({bs['上涨日占比%']}%)")
+                # 反T - 找胜率最高且触发天数>=5的梯度
+                ft = intraday_result["反T"]
+                best_ft_idx = -1
+                for i in range(len(ft["梯度"])):
+                    if ft["触发天数"][i] >= 5:
+                        if best_ft_idx == -1 or ft["胜率%"][i] > ft["胜率%"][best_ft_idx]:
+                            best_ft_idx = i
+                if best_ft_idx >= 0:
+                    print(f"  [反T] 最优: {ft['梯度'][best_ft_idx]}%梯度 "
+                          f"(触发{ft['触发天数'][best_ft_idx]}天, "
+                          f"胜率{ft['胜率%'][best_ft_idx]}%, "
+                          f"均收益{ft['平均收益%'][best_ft_idx]}%)")
+                # 正T - 找胜率最高且触发天数>=5的梯度
+                zt = intraday_result["正T"]
+                best_zt_idx = -1
+                for i in range(len(zt["梯度"])):
+                    if zt["触发天数"][i] >= 5:
+                        if best_zt_idx == -1 or zt["胜率%"][i] > zt["胜率%"][best_zt_idx]:
+                            best_zt_idx = i
+                if best_zt_idx >= 0:
+                    print(f"  [正T] 最优: {zt['梯度'][best_zt_idx]}%梯度 "
+                          f"(触发{zt['触发天数'][best_zt_idx]}天, "
+                          f"胜率{zt['胜率%'][best_zt_idx]}%, "
+                          f"均收益{zt['平均收益%'][best_zt_idx]}%)")
+            else:
+                print(f"  [日内T] 数据不足")
+
+            # 波段做T分析
+            swing_result = analyze_swing_t(data)
+            if not swing_result.get("数据不足", True):
+                summary = swing_result.get("汇总", [])
+                print(f"  [波段T] 统计 {swing_result['总交易日']} 个交易日")
+                for s in summary:
+                    print(f"    {s['周期']}日周期: 正T@{s['最佳正T阈值%']}%({s['正T胜率%']}%)  "
+                          f"反T@{s['最佳反T阈值%']}%({s['反T胜率%']}%)")
+            else:
+                print(f"  [波段T] 数据不足(需≥60条)")
+
+            # 生成Excel
+            generate_t_excel(intraday_result, swing_result,
+                             config.get("stock_name", ""), config["stock_code"],
+                             t_output)
+            print(f"  [T策略] 已保存: {os.path.abspath(t_output)}")
+        except Exception as e:
+            print(f"  [警告] T策略分析失败: {e}")
+            import traceback
+            traceback.print_exc()
+
         total_ok += 1
 
     # ── 3. 最终汇总 ──
@@ -275,6 +347,7 @@ def main():
         print(f"       Excel数据: {os.path.abspath(data_dir)}")
         print(f"       缓存数据: {os.path.abspath(cache_dir)}")
         print(f"       分析报告: {os.path.abspath(report_dir)}")
+        print(f"       T策略分析: {os.path.abspath(t_analysis_dir)}")
     print(f"{'=' * 50}")
 
 

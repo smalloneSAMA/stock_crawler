@@ -4,7 +4,7 @@
             "stock_name": "神火股份",
             "stock_code": "000933",
             "start_date": "2025-01-01",
-            "end_date": "2026-05-18",
+            "end_date": "2026-05-19",
             "output_file": "神火股份抓取数据.xlsx",
             "analysis": {
                 "grid_levels": 4,

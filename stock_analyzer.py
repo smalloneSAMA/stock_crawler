@@ -462,6 +462,94 @@ def analyze_valuation(data: List[Dict]) -> Dict:
 #  三、波动降本
 # ════════════════════════════════════════════════════════════════
 
+
+def _analyze_t_gradient_stats(data: List[Dict], max_gradient: int = 10) -> Dict:
+    """
+    T梯度统计分析 —— 按1%梯度统计上涨/下跌幅度的胜率
+
+    对全量历史数据（配置时间范围内），按 1% 为梯度统计：
+      - 正T胜率: 上涨幅度% ≥ 目标梯度 的天数占比
+        （即：做多T时，日内涨幅达到该梯度的概率）
+      - 反T胜率: |下跌幅度%| ≥ 目标梯度 的天数占比
+        （即：做空T时，日内跌幅达到该梯度的概率）
+
+    Args:
+        data: K线数据（最新在前），需包含 上涨幅度%、下跌幅度% 字段
+        max_gradient: 最大统计梯度（默认10%，即统计1%~10%）
+
+    Returns:
+        {
+            "总交易日": N,
+            "梯度列表": [1, 2, 3, ...],
+            "正T胜率": [65.2, 42.1, ...],       # 每个梯度的胜率%
+            "反T胜率": [58.3, 36.7, ...],
+            "正T样本数": [850, 550, ...],        # 达到该梯度的天数
+            "反T样本数": [760, 480, ...],
+            "最佳正T梯度": {"梯度": 1, "胜率": 65.2},
+            "均衡梯度": {"梯度": 2, "正T胜率": 42.1, "反T胜率": 36.7},
+        }
+    """
+    # 提取上涨幅度% 和 下跌幅度%
+    up_amps = []   # 上涨幅度% (正值)
+    down_amps = [] # 下跌幅度%的绝对值 (正值)
+    for row in data:
+        up = row.get("上涨幅度%")
+        down = row.get("下跌幅度%")
+        if up is not None and isinstance(up, (int, float)):
+            up_amps.append(abs(up))
+        if down is not None and isinstance(down, (int, float)):
+            down_amps.append(abs(down))
+
+    total_days = len(data)
+    if not up_amps:
+        return {"总交易日": total_days, "数据不足": True}
+
+    gradients = list(range(1, max_gradient + 1))
+    up_rates = []     # 正T胜率
+    down_rates = []   # 反T胜率
+    up_counts = []    # 正T达标天数
+    down_counts = []  # 反T达标天数
+
+    for g in gradients:
+        uc = sum(1 for a in up_amps if a >= g)
+        dc = sum(1 for a in down_amps if a >= g)
+        up_counts.append(uc)
+        down_counts.append(dc)
+        up_rates.append(round(uc / total_days * 100, 1) if total_days > 0 else 0)
+        down_rates.append(round(dc / total_days * 100, 1) if total_days > 0 else 0)
+
+    # 找最佳正T梯度（胜率 >= 50% 的最大梯度）
+    best_up_g = 0
+    for i, r in enumerate(up_rates):
+        if r >= 50:
+            best_up_g = gradients[i]
+
+    # 找均衡梯度（正T和反T胜率都 >= 30% 的最大梯度）
+    balanced_g = 0
+    for i in range(len(gradients)):
+        if up_rates[i] >= 30 and down_rates[i] >= 30:
+            balanced_g = gradients[i]
+
+    return {
+        "总交易日": total_days,
+        "数据不足": False,
+        "梯度列表": gradients,
+        "正T胜率": up_rates,
+        "反T胜率": down_rates,
+        "正T样本数": up_counts,
+        "反T样本数": down_counts,
+        "最佳正T梯度": {
+            "梯度": best_up_g,
+            "胜率": up_rates[best_up_g - 1] if best_up_g > 0 else 0,
+        } if best_up_g > 0 else None,
+        "均衡梯度": {
+            "梯度": balanced_g,
+            "正T胜率": up_rates[balanced_g - 1] if balanced_g > 0 else 0,
+            "反T胜率": down_rates[balanced_g - 1] if balanced_g > 0 else 0,
+        } if balanced_g > 0 else None,
+    }
+
+
 def analyze_volatility(data: List[Dict], config: Optional[Dict] = None) -> Dict:
     """
     波动率分析 —— 为做T和网格提供具体价格、数量及风险评估
@@ -559,6 +647,9 @@ def analyze_volatility(data: List[Dict], config: Optional[Dict] = None) -> Dict:
     recent_5d_up = sum(1 for i in range(min(5, len(closes)-1)) if closes[i] > closes[i+1])
     recent_5d_down = min(5, len(closes)-1) - recent_5d_up
 
+    # -- T梯度统计（基于全量历史数据） --
+    t_gradient_stats = _analyze_t_gradient_stats(data, max_gradient=10)
+
     return {
         "verdict": "波动分析完成",
         "detail": {
@@ -601,6 +692,7 @@ def analyze_volatility(data: List[Dict], config: Optional[Dict] = None) -> Dict:
                 "各档位说明": prob_note,
                 "策略说明": f"每跌{grid_spacing}买一档 (共{grid_levels}档)，每涨{grid_spacing}卖一档，滚动操作降成本",
             },
+            "T梯度统计": t_gradient_stats,
         },
     }
 
@@ -802,6 +894,55 @@ def generate_decision_report(
                 L(f"    - {note}")
         L(f"  -> {grid.get('策略说明','')}")
     L()
+
+    # ── T梯度统计分析 ──
+    tg = vod.get("T梯度统计", {})
+    if tg and not tg.get("数据不足", True):
+        L(f"  -- [T梯度统计分析] --")
+        L(f"  基于 {tg.get('总交易日',0)} 个交易日的 上涨幅度%/下跌幅度% 统计")
+        L()
+        # 表头
+        L(f"  {'梯度':>6}  {'正T胜率':>10}  {'正T天数':>8}  {'反T胜率':>10}  {'反T天数':>8}  {'推荐策略':>14}")
+        L(f"  {'-'*62}")
+
+        grads = tg.get("梯度列表", [])
+        up_rates = tg.get("正T胜率", [])
+        up_counts = tg.get("正T样本数", [])
+        down_rates = tg.get("反T胜率", [])
+        down_counts = tg.get("反T样本数", [])
+
+        for i in range(len(grads)):
+            g = grads[i]
+            ur = up_rates[i] if i < len(up_rates) else 0
+            uc = up_counts[i] if i < len(up_counts) else 0
+            dr = down_rates[i] if i < len(down_rates) else 0
+            dc = down_counts[i] if i < len(down_counts) else 0
+
+            # 推荐策略
+            if ur >= 60:
+                tip = "正T优先"
+            elif dr >= 60:
+                tip = "反T优先"
+            elif ur >= 40 and dr >= 40:
+                tip = "正反皆可"
+            elif ur >= 40:
+                tip = "可做正T"
+            elif dr >= 40:
+                tip = "可做反T"
+            else:
+                tip = "胜率偏低"
+
+            L(f"  {f'{g}%':>6}  {ur:>8.1f}%  {uc:>8}  {dr:>8.1f}%  {dc:>8}  {tip:>14}")
+
+        L()
+        best_up = tg.get("最佳正T梯度")
+        balanced = tg.get("均衡梯度")
+        if best_up:
+            L(f"  -> [正T建议] 推荐梯度: {best_up['梯度']}% (胜率 {best_up['胜率']}%)")
+        if balanced:
+            L(f"  -> [均衡建议] {balanced['梯度']}% 梯度正反T胜率均衡"
+              f" (正T:{balanced['正T胜率']}% / 反T:{balanced['反T胜率']}%)")
+        L()
 
     # ═══════ 底部 ═══════
     sep()
