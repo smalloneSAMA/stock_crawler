@@ -28,16 +28,18 @@ COLUMN_DEFS = [
     {"header": "成交额（亿）",   "width": 14},
     {"header": "涨跌幅%",       "width": 10},
     {"header": "振幅%",         "width": 10},
-    {"header": "日内波动区间",   "width": 14},
-    {"header": "上涨幅度",      "width": 14},
-    {"header": "下跌幅度",      "width": 14},
+    {"header": "日内波动区间%",  "width": 14},
+    {"header": "上涨幅度%",     "width": 14},
+    {"header": "下跌幅度%",     "width": 14},
     {"header": "当前市值(亿)",  "width": 14},
     {"header": "市盈率TTM",     "width": 12},
-    {"header": "股息率%",       "width": 10},
+    {"header": "股息率TTM",     "width": 10},
     {"header": "市净率",        "width": 10},
     {"header": "市销率",        "width": 10},
     {"header": "净资产收益率%",  "width": 14},
     {"header": "每股收益",      "width": 12},
+    {"header": "每股股息TTM",   "width": 12},
+    {"header": "分红率",       "width": 10},
 ]
 
 
@@ -78,19 +80,20 @@ def generate_excel(
     end_date: str,
     data: List[Dict],
     output_path: str,
-    financial_data: Optional[Dict] = None,
 ) -> str:
     """
     生成格式化 Excel 文件（原生 XML 方式）
 
+    财务指标字段已经嵌入到每行 data 中（由 enrich_kline_with_financials 填充），
+    因此不再需要单独的 financial_data 参数。
+
     Args:
-        stock_name:      股票名称
-        stock_code:      股票代码
-        start_date:      起始日期
-        end_date:        结束日期
-        data:            数据行列表
-        output_path:     输出文件路径
-        financial_data:  财务指标字典（每行的末尾列填入相同的值）
+        stock_name:  股票名称
+        stock_code:  股票代码
+        start_date:  起始日期
+        end_date:    结束日期
+        data:        已含财务字段的K线数据行列表
+        output_path: 输出文件路径
 
     Returns:
         生成的文件绝对路径
@@ -107,7 +110,6 @@ def generate_excel(
     date_range = f"({start_display} ~ {end_display})"
     title_text = f"{stock_name} ({stock_code}) 日K线数据  {date_range}"
 
-    # 使用内联字符串
     sheet_rows_xml.append(
         f'<row r="1" spans="1:{num_cols}" s="1" customFormat="1" ht="36" customHeight="1">'
         f'<c r="A1" s="1" t="inlineStr"><is><t>{xml_escape(title_text)}</t></is></c>'
@@ -124,12 +126,11 @@ def generate_excel(
             f'<is><t>{xml_escape(col_def["header"])}</t></is>'
             f'</c>'
         )
-    sheet_rows_xml.append(f'<row r="2" spans="1:{num_cols}" s="2" ht="24" customHeight="1">{header_cells}</row>')
+    sheet_rows_xml.append(
+        f'<row r="2" spans="1:{num_cols}" s="2" ht="24" customHeight="1">{header_cells}</row>'
+    )
 
-    # 第 3+ 行：数据
-    # 前 12 列来自 K-line 数据，后面的财务指标列来自 financial_data
-    kline_col_count = 12
-
+    # 第 3+ 行：所有数据字段都已嵌入到每行 record 中
     for row_idx, record in enumerate(data):
         row_num = row_idx + 3
         cells = ''
@@ -137,12 +138,7 @@ def generate_excel(
         for col_idx, col_def in enumerate(COLUMN_DEFS):
             col_letter = col_letters[col_idx]
             header = col_def["header"]
-
-            # 决定值的来源
-            if col_idx < kline_col_count:
-                raw_val = record.get(header, "")
-            else:
-                raw_val = financial_data.get(header) if financial_data else None
+            raw_val = record.get(header)
 
             if header == "日期" and raw_val:
                 cells += (
@@ -160,7 +156,9 @@ def generate_excel(
                     f'</c>'
                 )
 
-        sheet_rows_xml.append(f'<row r="{row_num}" spans="1:{num_cols}" s="3">{cells}</row>')
+        sheet_rows_xml.append(
+            f'<row r="{row_num}" spans="1:{num_cols}" s="3">{cells}</row>'
+        )
 
     # ── 合并单元格信息 ──
     merge_cell = f'A1:{col_letters[-1]}1'

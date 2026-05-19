@@ -1,0 +1,13 @@
+# 忽略根目录下的 build 文件夹
+/.idea/
+/__pycache__/
+
+# 忽略任意层级的 node_modules 文件夹
+
+
+# 忽略多级路径下的 temp
+
+
+# 忽略所有 .log 文件
+*.log
+nul

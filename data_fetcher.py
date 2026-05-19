@@ -238,19 +238,19 @@ def fetch_stock_data(config: Dict) -> List[Dict]:
             amplitude = 0.0
         record["振幅%"] = amplitude
 
-        # ── 日内波动区间 = (最高 - 最低) / 开盘价 ──
+        # ── 日内波动区间% = (最高 - 最低) / 开盘价 × 100 ──
         if open_price != 0:
-            record["日内波动区间"] = round((high - low) / open_price, 2)
+            record["日内波动区间%"] = round(((high - low) / open_price) * 100, 2)
         else:
-            record["日内波动区间"] = 0.0
+            record["日内波动区间%"] = 0.0
 
         # ── 上涨幅度% / 下跌幅度% ──
         if open_price != 0:
-            record["上涨幅度"] = round(((high - open_price) / open_price) * 100, 2)
-            record["下跌幅度"] = round(((low - open_price) / open_price) * 100, 2)
+            record["上涨幅度%"] = round(((high - open_price) / open_price) * 100, 2)
+            record["下跌幅度%"] = round(((low - open_price) / open_price) * 100, 2)
         else:
-            record["上涨幅度"] = 0.0
-            record["下跌幅度"] = 0.0
+            record["上涨幅度%"] = 0.0
+            record["下跌幅度%"] = 0.0
 
         parsed_data.append(record)
 
