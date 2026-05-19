@@ -930,3 +930,409 @@ def generate_t_excel(intraday_result: Dict, swing_result: Dict, stock_name: str,
         raise RuntimeError(f"写入T策略分析Excel失败: {e}")
 
     return os.path.abspath(output_path)
+
+
+def _build_tech_comment(tech: Dict) -> str:
+    """生成技术指标的解读文字"""
+    parts = []
+    parts.append(f"MACD:{tech.get('MACD方向','N/A')}")
+    rsi = tech.get("RSI", "N/A")
+    if isinstance(rsi, (int, float)):
+        if rsi > 70:
+            parts.append(f"RSI:{rsi}(超买)")
+        elif rsi < 30:
+            parts.append(f"RSI:{rsi}(超卖)")
+        else:
+            parts.append(f"RSI:{rsi}(中性)")
+    else:
+        parts.append(f"RSI:{rsi}")
+    parts.append(f"量:{tech.get('成交量','N/A')}")
+    div = tech.get("背离", "无")
+    if div != "无":
+        parts.append(f"⚠{div}")
+    return " | ".join(parts)
+
+
+# ════════════════════════════════════════════════════════════════
+#  四、当前波段T信号分析
+# ════════════════════════════════════════════════════════════════
+
+def analyze_current_swing_signal(
+    data: List[Dict],
+    target_date: str,
+    swing_result: Dict,
+) -> Optional[Dict]:
+    """
+    分析指定日期是否适合做波段T
+
+    基于 swing_result 的历史统计，检查 target_date 回溯 N日 的涨跌幅，
+    判断触发的是正T还是反T信号，并给出历史胜率。
+
+    Args:
+        data: K线数据（最新在前）
+        target_date: 目标分析日期 (YYYY-MM-DD)
+        swing_result: analyze_swing_t 的返回结果
+
+    Returns:
+        {
+            "股票名称": ...,
+            "股票代码": ...,
+            "分析日期": target_date,
+            "数据日期范围": ...,
+            "信号": [
+                {
+                    "周期": "5日",
+                    "区间涨跌幅%": ...,
+                    "方向": "上涨" / "下跌" / "震荡",
+                    "触发阈值%": ...,
+                    "信号类型": "正T" / "反T" / "无信号",
+                    "建议操作": "买入" / "卖出" / "观望",
+                    "历史胜率%": ...,
+                    "历史信号次数": ...,
+                },
+                ...
+            ],
+            "综合建议": "...",
+        }
+    """
+    # 将数据转为时间正序
+    data_asc = list(reversed(data))
+    closes = [row.get("收盘价", 0) or 0 for row in data_asc]
+    dates = [row.get("日期", "") for row in data_asc]
+
+    # 找 target_date 在 data 中的位置
+    if target_date not in dates:
+        # 尝试找最近的日期
+        from datetime import datetime as dt
+        target_dt = dt.strptime(target_date, "%Y-%m-%d")
+        closest_idx = None
+        closest_diff = None
+        for i, d in enumerate(dates):
+            if d:
+                d_dt = dt.strptime(d, "%Y-%m-%d")
+                diff = abs((d_dt - target_dt).days)
+                if closest_diff is None or diff < closest_diff:
+                    closest_diff = diff
+                    closest_idx = i
+        if closest_idx is not None and closest_diff is not None and closest_diff <= 5:
+            target_date = dates[closest_idx]
+            target_idx = closest_idx
+        else:
+            print(f"  [警告] 分析日期 {target_date} 在数据中未找到")
+            return None
+    else:
+        target_idx = dates.index(target_date)
+
+    n_data = len(closes)
+
+    # ── 计算目标日期的技术指标（基于截至目标日的全部数据）──
+    seg_closes = closes[:target_idx + 1]
+    seg_volumes = [row.get("成交量(万手)", 0) or 0 for row in data_asc[:target_idx + 1]]
+    seg_highs = [row.get("最高价", 0) or 0 for row in data_asc[:target_idx + 1]]
+    seg_lows = [row.get("最低价", 0) or 0 for row in data_asc[:target_idx + 1]]
+
+    # 反转→最新在前，用于计算指标
+    rev_closes = list(reversed(seg_closes))
+    rev_volumes = list(reversed(seg_volumes))
+
+    macd_info_val = _macd_info(rev_closes) if len(rev_closes) >= 26 else {"方向": "数据不足"}
+    rsi_val = _rsi(rev_closes, 14) if len(rev_closes) >= 15 else None
+    vol_status = _volume_status(rev_volumes, 0, 20) if len(rev_volumes) >= 21 else "N/A"
+    divergence = _macd_divergence(rev_closes, 0, min(30, len(rev_closes))) if len(rev_closes) >= 30 else "无"
+
+    tech_summary = {
+        "MACD方向": macd_info_val.get("方向", "N/A"),
+        "RSI": round(rsi_val, 1) if rsi_val is not None else "N/A",
+        "成交量": vol_status,
+        "背离": divergence,
+        "收盘价": closes[target_idx],
+    }
+
+    signals = []
+
+    for period in SWING_PERIODS:
+        if target_idx < period:
+            continue
+
+        # 计算 N 日区间涨跌幅
+        prev_close = closes[target_idx - period]
+        cur_close = closes[target_idx]
+        if prev_close == 0:
+            continue
+        ret = (cur_close - prev_close) / prev_close * 100
+
+        # 判断方向
+        if ret >= 3:
+            direction = "上涨"
+        elif ret <= -3:
+            direction = "下跌"
+        else:
+            direction = "震荡"
+
+        # 在 swing_result 中找对应周期+阈值的历史胜率
+        period_key = period
+        best_zt = {"threshold": 0, "胜率": 0, "次数": 0}
+        best_ft = {"threshold": 0, "胜率": 0, "次数": 0}
+
+        if period_key in swing_result:
+            for th in SWING_THRESHOLDS:
+                tk = f"threshold_{th}"
+                if tk in swing_result[period_key]:
+                    td = swing_result[period_key][tk]
+                    zt = td.get("正T", {})
+                    ft = td.get("反T", {})
+                    # 检查当前涨跌幅是否 >= 阈值
+                    if ret >= th and ft.get("信号次数", 0) >= 3:
+                        if ft["胜率%"] > best_ft["胜率"]:
+                            best_ft = {"threshold": th, "胜率": ft["胜率%"], "次数": ft["信号次数"]}
+                    if ret <= -th and zt.get("信号次数", 0) >= 3:
+                        if zt["胜率%"] > best_zt["胜率"]:
+                            best_zt = {"threshold": th, "胜率": zt["胜率%"], "次数": zt["信号次数"]}
+
+        # 生成信号条目（附带技术指标）
+        entry = {
+            "周期": f"{period}日",
+            "区间涨跌幅%": round(ret, 2),
+            "方向": direction,
+            "MACD": tech_summary["MACD方向"],
+            "RSI": tech_summary["RSI"],
+            "成交量": tech_summary["成交量"],
+            "背离": tech_summary["背离"],
+        }
+
+        if ret >= 3 and best_ft["threshold"] > 0:
+            entry["触发阈值%"] = best_ft["threshold"]
+            entry["信号类型"] = "反T"
+            entry["建议操作"] = "卖出(反T)"
+            entry["历史胜率%"] = best_ft["胜率"]
+            entry["历史信号次数"] = best_ft["次数"]
+        elif ret <= -3 and best_zt["threshold"] > 0:
+            entry["触发阈值%"] = best_zt["threshold"]
+            entry["信号类型"] = "正T"
+            entry["建议操作"] = "买入(正T)"
+            entry["历史胜率%"] = best_zt["胜率"]
+            entry["历史信号次数"] = best_zt["次数"]
+        else:
+            entry["触发阈值%"] = "-"
+            entry["信号类型"] = "无信号"
+            entry["建议操作"] = "观望"
+            entry["历史胜率%"] = "-"
+            entry["历史信号次数"] = 0
+
+        signals.append(entry)
+
+    # 技术指标解读
+    tech_comment = _build_tech_comment(tech_summary)
+    _ = tech_comment  # 供后续使用
+
+    # 综合建议
+    zt_count = sum(1 for s in signals if s["信号类型"] == "正T")
+    ft_count = sum(1 for s in signals if s["信号类型"] == "反T")
+    if zt_count > ft_count and zt_count >= 2:
+        overall = "多个周期出现正T信号，建议关注买入机会"
+    elif ft_count > zt_count and ft_count >= 2:
+        overall = "多个周期出现反T信号，建议关注卖出机会"
+    elif zt_count == 1 and ft_count == 0:
+        overall = "有正T信号，但仅单个周期确认"
+    elif ft_count == 1 and zt_count == 0:
+        overall = "有反T信号，但仅单个周期确认"
+    else:
+        overall = "无明显趋势信号，建议观望"
+
+    return {
+        "股票名称": "",
+        "股票代码": "",
+        "分析日期": target_date,
+        "数据日期范围": f"{dates[0] if dates else '?'} ~ {dates[-1] if dates else '?'}",
+        "技术指标": tech_summary,
+        "信号": signals,
+        "综合建议": overall,
+    }
+
+
+# ════════════════════════════════════════════════════════════════
+#  五、生成当前波段信号 Excel
+# ════════════════════════════════════════════════════════════════
+
+def generate_current_signal_excel(
+    signal_result: Dict,
+    stock_name: str,
+    stock_code: str,
+    output_path: str,
+) -> str:
+    """
+    生成当前波段T信号分析 Excel
+    """
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="10"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><name val="Microsoft YaHei"/></font>
+  </fonts>
+  <fills count="4">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9E2F3"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color auto="1"/></left>
+      <right style="thin"><color auto="1"/></right>
+      <top style="thin"><color auto="1"/></top>
+      <bottom style="thin"><color auto="1"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+  </cellXfs>
+</styleSheet>'''
+
+    sheets_xml = []
+    sheet_names = []
+
+    # ── 标题信息行 ──
+    info_headers = ["项目", "内容"]
+    info_widths = [16, 40]
+    info_rows = [
+        ["股票", f"{stock_name}({stock_code})"],
+        ["分析日期", signal_result.get("分析日期", "")],
+        ["数据日期范围", signal_result.get("数据日期范围", "")],
+        ["综合建议", signal_result.get("综合建议", "")],
+    ]
+    sheets_xml.append(_build_sheet_xml("分析概要", info_headers, info_rows, info_widths))
+    sheet_names.append("分析概要")
+
+    # ── 技术指标概览表 ──
+    tech = signal_result.get("技术指标", {})
+    if tech:
+        tech_headers = ["指标", "数值"]
+        tech_widths = [12, 24]
+        tech_rows = [
+            ["MACD方向", tech.get("MACD方向", "N/A")],
+            ["RSI", tech.get("RSI", "N/A")],
+            ["成交量", tech.get("成交量", "N/A")],
+            ["背离", tech.get("背离", "无")],
+            ["分析日收盘价", tech.get("收盘价", "")],
+        ]
+        sheets_xml.append(_build_sheet_xml("技术指标", tech_headers, tech_rows, tech_widths))
+        sheet_names.append("技术指标")
+
+    # ── 信号详情表 ──
+    sig_headers = ["周期", "方向", "区间涨跌幅%", "触发阈值%", "信号类型", "建议操作",
+                   "历史胜率%", "历史信号次数", "MACD", "RSI", "成交量", "背离"]
+    sig_widths = [8, 8, 14, 12, 10, 14, 12, 14, 12, 8, 8, 8]
+    sig_rows = []
+    for s in signal_result.get("信号", []):
+        sig_rows.append([
+            s.get("周期", ""),
+            s.get("方向", ""),
+            s.get("区间涨跌幅%", 0),
+            s.get("触发阈值%", "-"),
+            s.get("信号类型", ""),
+            s.get("建议操作", ""),
+            s.get("历史胜率%", "-"),
+            s.get("历史信号次数", 0),
+            s.get("MACD", ""),
+            s.get("RSI", ""),
+            s.get("成交量", ""),
+            s.get("背离", ""),
+        ])
+    sheets_xml.append(_build_sheet_xml("信号详情", sig_headers, sig_rows, sig_widths))
+    sheet_names.append("信号详情")
+
+    # ── 解读说明 ──
+    guide_lines = [
+        f"{stock_name}({stock_code}) 波段T信号分析",
+        "=" * 50,
+        "",
+        f"分析日期: {signal_result.get('分析日期', '')}",
+        f"综合建议: {signal_result.get('综合建议', '')}",
+        "",
+        "【信号解读】",
+        "  上涨 → 反T信号: 建议先卖出后买回，赚取回调差价",
+        "  下跌 → 正T信号: 建议先买入后卖出，赚取反弹差价",
+        "  震荡 → 无信号: 趋势不明朗，建议观望",
+        "",
+        "【操作建议】",
+        "  - 多个周期信号一致时，信号可靠性更高",
+        "  - 历史胜率 > 55% 的信号值得执行",
+        "  - 结合MACD/RSI等技术指标可进一步提高胜率",
+        "",
+        "【注意事项】",
+        "  1. 以上分析基于历史数据，不保证未来表现",
+        "  2. 反T需先有持仓或融券，正T需有可用资金",
+        "  3. 建议结合当日实际盘面判断是否执行",
+    ]
+    sheets_xml.append(_build_text_sheet(guide_lines, col_width=80))
+    sheet_names.append("解读说明")
+
+    # ── 构建workbook ──
+    sheet_refs = '\n'.join(
+        f'    <sheet name="{xml_escape(name)}" sheetId="{i+1}" r:id="rId{i+1}"/>'
+        for i, name in enumerate(sheet_names)
+    )
+    workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+{sheet_refs}
+  </sheets>
+</workbook>'''
+
+    sheet_rels = '\n'.join(
+        f'  <Relationship Id="rId{i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i+1}.xml"/>'
+        for i in range(len(sheet_names))
+    )
+    workbook_rels_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+{sheet_rels}
+  <Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+'''
+    for i in range(len(sheet_names)):
+        content_types_xml += f'  <Override PartName="/xl/worksheets/sheet{i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+    content_types_xml += '</Types>'
+
+    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    # ── 打包 ──
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    def _try_write(path):
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('[Content_Types].xml', content_types_xml.encode('utf-8'))
+            zf.writestr('_rels/.rels', root_rels_xml.encode('utf-8'))
+            zf.writestr('xl/workbook.xml', workbook_xml.encode('utf-8'))
+            zf.writestr('xl/_rels/workbook.xml.rels', workbook_rels_xml.encode('utf-8'))
+            for i, sheet_xml in enumerate(sheets_xml):
+                zf.writestr(f'xl/worksheets/sheet{i+1}.xml', sheet_xml.encode('utf-8'))
+            zf.writestr('xl/styles.xml', styles_xml.encode('utf-8'))
+
+    try:
+        _try_write(output_path)
+    except PermissionError:
+        import time
+        base, ext = os.path.splitext(output_path)
+        fallback = f"{base}_{int(time.time())}{ext}"
+        print(f"  [注意] Excel文件被占用，另存为: {os.path.basename(fallback)}")
+        _try_write(fallback)
+        output_path = fallback
+
+    return os.path.abspath(output_path)

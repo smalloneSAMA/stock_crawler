@@ -36,19 +36,21 @@ class ConfigError(Exception):
 
 def load_config(config_path: str) -> List[Dict]:
     """
-    加载并验证 JSON 配置文件
-
-    必填字段：stock_code, output_file
-    可选字段：stock_name, start_date, end_date, analysis
-
-    Args:
-        config_path: JSON 配置文件路径
+    加载并验证 JSON 配置文件（仅股票配置列表）
 
     Returns:
         标准化后的股票配置列表
+    """
+    stocks, _ = load_config_full(config_path)
+    return stocks
 
-    Raises:
-        ConfigError: 文件不存在、JSON 格式错误、缺少必填字段
+
+def load_config_full(config_path: str):
+    """
+    加载完整配置，返回 (股票配置列表, 全局配置字典)
+
+    全局配置字段（可选）：
+      - t_analysis_date: 做T分析日期 (如 "2026-05-19")
     """
     if not os.path.exists(config_path):
         raise ConfigError(f"配置文件不存在: {config_path}")
@@ -75,7 +77,6 @@ def load_config(config_path: str) -> List[Dict]:
             if field not in item or not item[field]:
                 raise ConfigError(f"第 {idx} 只股票缺少必填字段: {field}")
 
-        # 自动补全交易所后缀（6/9开头→沪市，其余→深市）
         code = str(item["stock_code"]).strip()
         if not code.endswith(".SZ") and not code.endswith(".SH"):
             if code.startswith(("6", "9")):
@@ -89,10 +90,16 @@ def load_config(config_path: str) -> List[Dict]:
             "start_date": item.get("start_date", ""),
             "end_date": item.get("end_date", ""),
             "output_file": item["output_file"],
-            "analysis": item.get("analysis"),  # 分析参数，可为 None
+            "analysis": item.get("analysis"),
         })
 
-    return validated
+    # 提取全局配置
+    global_config = {}
+    for key in ["t_analysis_date"]:
+        if key in raw:
+            global_config[key] = raw[key]
+
+    return validated, global_config
 
 
 def print_config_list(configs: List[Dict]) -> None:

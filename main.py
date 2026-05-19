@@ -28,7 +28,7 @@ from datetime import datetime
 # 将当前目录加入模块搜索路径，方便导入同级 .py 文件
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config_manager import ConfigError, load_config, print_config_list
+from config_manager import ConfigError, load_config, load_config_full, print_config_list
 from data_fetcher import DataFetchError, fetch_stock_data
 from excel_generator import ExcelGenerateError, generate_excel
 from financial_fetcher import FinancialFetchError, enrich_kline_with_financials
@@ -44,7 +44,9 @@ from cache_manager import (
 from t_strategy_analyzer import (
     analyze_intraday_t,
     analyze_swing_t,
+    analyze_current_swing_signal,
     generate_t_excel,
+    generate_current_signal_excel,
 )
 
 
@@ -79,10 +81,14 @@ def main():
 
     # ── 1. 加载配置列表 ──
     try:
-        configs = load_config(args.config)
+        configs, global_config = load_config_full(args.config)
     except ConfigError as e:
         print(f"[错误] 配置错误: {e}")
         sys.exit(1)
+
+    t_analysis_date = global_config.get("t_analysis_date", "")
+    if t_analysis_date:
+        print(f"[配置] 波段T分析日期: {t_analysis_date}")
 
     print_config_list(configs)
 
@@ -333,6 +339,44 @@ def main():
                              config.get("stock_name", ""), config["stock_code"],
                              t_output)
             print(f"  [T策略] 已保存: {os.path.abspath(t_output)}")
+
+            # ── 当前波段T信号分析（如果配置了分析日期）──
+            if t_analysis_date and not swing_result.get("数据不足", True):
+                try:
+                    signal_result = analyze_current_swing_signal(
+                        data, t_analysis_date, swing_result
+                    )
+                    if signal_result:
+                        signal_output = os.path.join(
+                            t_analysis_dir,
+                            config.get("output_file", "report")
+                            .replace(".xlsx", f"_波段T信号_{t_analysis_date}.xlsx"),
+                        )
+                        generate_current_signal_excel(
+                            signal_result,
+                            config.get("stock_name", ""),
+                            config["stock_code"],
+                            signal_output,
+                        )
+                        print(f"  [波段信号] 已保存: {os.path.abspath(signal_output)}")
+                        # 打印技术指标摘要
+                        tech = signal_result.get("技术指标", {})
+                        from t_strategy_analyzer import _build_tech_comment
+                        print(f"  [技术指标] {_build_tech_comment(tech)}")
+                        # 打印推荐摘要
+                        for sig in signal_result.get("信号", []):
+                            action = sig.get("建议操作", "观望")
+                            period = sig.get("周期", "")
+                            direction = sig.get("方向", "")
+                            ret = sig.get("区间涨跌幅%", 0)
+                            rate = sig.get("历史胜率%", 0)
+                            macd = sig.get("MACD", "")
+                            rsi = sig.get("RSI", "")
+                            print(f"    {period}日: {direction} {ret:+.1f}% → {action} "
+                                  f"(胜率{rate}% | MACD:{macd} RSI:{rsi})")
+                except Exception as e2:
+                    print(f"  [警告] 当前波段信号分析失败: {e2}")
+
         except Exception as e:
             print(f"  [警告] T策略分析失败: {e}")
             import traceback
