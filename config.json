@@ -3,25 +3,13 @@
         {
             "stock_name": "神火股份",
             "stock_code": "000933",
-            "start_date": "2022-04-19",
+            "start_date": "2025-01-01",
             "end_date": "2026-05-18",
             "output_file": "神火股份抓取数据.xlsx",
             "analysis": {
                 "grid_levels": 4,
                 "atr_multiplier": 0.5,
                 "t_single_qty": 500
-            }
-        },
-        {
-            "stock_name": "贵州茅台",
-            "stock_code": "600519",
-            "start_date": "2024-01-01",
-            "end_date": "2026-05-18",
-            "output_file": "贵州茅台抓取数据.xlsx",
-            "analysis": {
-                "grid_levels": 3,
-                "atr_multiplier": 0.5,
-                "t_single_qty": 100
             }
         }
     ]
