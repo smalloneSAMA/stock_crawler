@@ -1,25 +1,11 @@
 {
-    "stocks": [
-        {
-            "stock_name": "神火股份",
-            "start_date": "2020-01-01",
-            "end_date": "2026-05-19",
-            "analysis": {
-                "grid_levels": 4,
-                "atr_multiplier": 0.5,
-                "t_single_qty": 500
-            }
-        },
-        {
-            "stock_name": "贵州茅台",
-            "start_date": "2024-01-01",
-            "end_date": "2026-05-19",
-            "analysis": {
-                "grid_levels": 3,
-                "atr_multiplier": 0.5,
-                "t_single_qty": 100
-            }
-        }
-    ],
-    "t_analysis_date": "2024-01-01~2026-05-19"
+    "stocks": ["神火股份"],
+    "start_date": "2025-09-20",
+    "end_date": "2026-05-20",
+    "analysis": {
+        "grid_levels": 4,
+        "atr_multiplier": 0.5,
+        "t_single_qty": 500
+    },
+    "t_analysis_date": "2025-09-20~2026-05-20"
 }

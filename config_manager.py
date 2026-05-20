@@ -6,19 +6,31 @@
 
 配置文件 (config.json) 各字段说明：
 
-简化写法（只写名称，代码和文件名自动补全）：
+最简写法（一行一个股票名称，参数全局共享）：
+{
+    "stocks": ["神火股份", "贵州茅台"],       // 直接写名称数组
+    "start_date": "2020-01-01",               // 全局起始日期
+    "end_date": "2026-05-19",                 // 全局截止日期
+    "analysis": {                              // 全局分析参数（可选）
+        "grid_levels": 4,
+        "atr_multiplier": 0.5,
+        "t_single_qty": 500
+    }
+}
+
+标准写法（每只股票独立设置，代码/文件名可手动指定）：
 {
     "stocks": [
         {
-            "stock_name": "神火股份",         // 必填：股票名称
-            "start_date": "2020-01-01",        // 数据起始日期
-            "end_date": "2026-05-19",          // 数据截止日期
-            "analysis": { ... }                // 分析参数（可选）
+            "stock_name": "神火股份",
+            "stock_code": "000933",           // 不填则自动查询
+            "start_date": "2022-04-19",
+            "end_date": "2026-05-18",
+            "output_file": "神火股份.xlsx",    // 不填则自动生成
+            "analysis": { ... }
         }
     ]
 }
-
-完整写法（代码和文件名可手动指定）：
 {
     "stocks": [
         {
@@ -123,16 +135,37 @@ def load_config_full(config_path: str):
     if not isinstance(raw, dict) or "stocks" not in raw:
         raise ConfigError("配置文件根节点必须包含 'stocks' 数组")
 
-    stocks = raw["stocks"]
-    if not isinstance(stocks, list) or len(stocks) == 0:
+    stocks_raw = raw["stocks"]
+    if not isinstance(stocks_raw, list) or len(stocks_raw) == 0:
         raise ConfigError("'stocks' 必须是非空数组")
+
+    # 判断 stocks 格式：简单字符串数组 vs 对象数组
+    is_simple_list = isinstance(stocks_raw[0], str)
+
+    # 从根节点读取全局默认值（简单数组格式时使用）
+    default_start = raw.get("start_date", "")
+    default_end = raw.get("end_date", "")
+    default_analysis = raw.get("analysis")
 
     validated = []
 
-    for idx, item in enumerate(stocks, 1):
-        stock_name = item.get("stock_name", "")
-        stock_code = item.get("stock_code", "")
-        output_file = item.get("output_file", "")
+    for idx, item in enumerate(stocks_raw, 1):
+        if is_simple_list:
+            # 简单数组：元素就是股票名称
+            stock_name = item
+            stock_code = ""
+            output_file = ""
+            start_date = default_start
+            end_date = default_end
+            analysis = default_analysis
+        else:
+            # 对象数组：原有逻辑
+            stock_name = item.get("stock_name", "")
+            stock_code = item.get("stock_code", "")
+            output_file = item.get("output_file", "")
+            start_date = item.get("start_date", "")
+            end_date = item.get("end_date", "")
+            analysis = item.get("analysis")
 
         # ── 若没有股票代码，尝试通过名称自动查询 ──
         if not stock_code:
@@ -160,10 +193,10 @@ def load_config_full(config_path: str):
         validated.append({
             "stock_name": stock_name,
             "stock_code": stock_code,
-            "start_date": item.get("start_date", ""),
-            "end_date": item.get("end_date", ""),
+            "start_date": start_date,
+            "end_date": end_date,
             "output_file": output_file,
-            "analysis": item.get("analysis"),
+            "analysis": analysis,
         })
 
     # 提取全局配置

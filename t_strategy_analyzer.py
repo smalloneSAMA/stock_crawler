@@ -355,7 +355,7 @@ def analyze_intraday_t(
 # ════════════════════════════════════════════════════════════════
 
 # 波段周期列表
-SWING_PERIODS = [5, 10, 20, 30]
+SWING_PERIODS = [5, 10, 20, 30, 90]
 # 波段涨跌幅梯度阈值
 SWING_THRESHOLDS = [3, 5, 8, 10, 15, 20]
 # 信号后持有观察天数 = signal_lookahead_ratio × period
@@ -661,8 +661,15 @@ def _build_text_sheet(lines: List[str], col_width: int = 80) -> str:
 </worksheet>'''
 
 
-def _build_sheet_xml(sheet_name: str, headers: List[str], rows: List[List], col_widths: List[int]) -> str:
-    """构建一个 sheet 的 XML"""
+def _build_sheet_xml(sheet_name: str, headers: List[str], rows: List[List], col_widths: List[int],
+                     row_fills: Optional[List[int]] = None) -> str:
+    """
+    构建一个 sheet 的 XML
+
+    Args:
+        row_fills: 每行数据使用的填充色索引（None=默认样式 s=3）
+                   fill索引4=浅红(上升)  5=浅绿(下降)
+    """
     num_cols = len(headers)
     col_letters = [_col_letter(i + 1) for i in range(num_cols)]
     row_xmls = []
@@ -680,17 +687,22 @@ def _build_sheet_xml(sheet_name: str, headers: List[str], rows: List[List], col_
     # 数据行
     for ri, row_data in enumerate(rows):
         row_num = ri + 2
+        # 判断该行使用的样式
+        if row_fills and ri < len(row_fills) and row_fills[ri] is not None:
+            cell_style = row_fills[ri]  # 4=浅红(s=4), 5=浅绿(s=5)
+        else:
+            cell_style = 3  # 默认
         cells = ''
         for ci, val in enumerate(row_data):
             cl = col_letters[ci]
             if isinstance(val, (int, float)):
-                cells += f'<c r="{cl}{row_num}" s="3"><v>{val}</v></c>'
+                cells += f'<c r="{cl}{row_num}" s="{cell_style}"><v>{val}</v></c>'
             else:
                 cells += (
-                    f'<c r="{cl}{row_num}" s="3" t="inlineStr">'
+                    f'<c r="{cl}{row_num}" s="{cell_style}" t="inlineStr">'
                     f'<is><t>{xml_escape(str(val) if val is not None else "")}</t></is></c>'
                 )
-        row_xmls.append(f'<row r="{row_num}" spans="1:{num_cols}" s="3">{cells}</row>')
+        row_xmls.append(f'<row r="{row_num}" spans="1:{num_cols}">{cells}</row>')
 
     col_xml = '\n'.join(
         f'    <col min="{i+1}" max="{i+1}" width="{col_widths[i]}" customWidth="1"/>'
@@ -1453,6 +1465,95 @@ def generate_current_signal_excel(
 #  六、合并多日期波段T信号 Excel
 # ════════════════════════════════════════════════════════════════
 
+def _detect_trend_phases(prices: List[float], threshold_pct: float = 5.0) -> List[int]:
+    """
+    Zigzag趋势检测 —— 模拟人眼看图判断趋势
+
+    算法（两遍扫描）：
+      1. 第一遍：从起点开始扫描，追踪价格方向
+         - 上升趋势中追踪最高点，从最高点回落超过threshold_pct% → 确认一个"峰"
+         - 下降趋势中追踪最低点，从最低点反弹超过threshold_pct% → 确认一个"谷"
+         - 峰谷交替记录
+      2. 第二遍：在转折点之间填充趋势
+         - 峰→谷之间为下降趋势(浅绿)
+         - 谷→峰之间为上升趋势(浅红)
+         - 转折点当天仍算原趋势，次日才开始新趋势
+
+    threshold_pct: 趋势反转的最小幅度（默认5%，表示回调/反弹超过5%才算反转）
+
+    Returns:
+        [4, None, 4, 5, ...]  4=上升(浅红)  5=下降(浅绿)  None=横盘
+    """
+    n = len(prices)
+    fills = [None] * n
+    if n < 10:
+        return fills
+
+    # 1. 找初始方向（看前15天内是否有超过threshold_pct的变动）
+    direction = None  # 1=up, -1=down
+    for i in range(1, min(15, n)):
+        chg = (prices[i] - prices[0]) / prices[0] * 100
+        if chg > threshold_pct:
+            direction = 1
+            break
+        elif chg < -threshold_pct:
+            direction = -1
+            break
+
+    if direction is None:
+        return fills  # 没有明确方向，全部横盘
+
+    # 2. 扫描找出所有转折点（峰和谷）
+    turning_pts = []   # [(index, type), ...]  type='peak' or 'trough'
+    extreme_idx = 0
+    extreme_price = prices[0]
+
+    for i in range(1, n):
+        p = prices[i]
+
+        if direction == 1:  # 上升中
+            if p > extreme_price:
+                extreme_price = p
+                extreme_idx = i
+            # 从最高点回落超过阈值 → 确认峰
+            if (extreme_price - p) / extreme_price * 100 > threshold_pct:
+                turning_pts.append((extreme_idx, 'peak'))
+                direction = -1
+                extreme_price = p
+                extreme_idx = i
+        else:  # 下降中
+            if p < extreme_price:
+                extreme_price = p
+                extreme_idx = i
+            # 从最低点反弹超过阈值 → 确认谷
+            if (p - extreme_price) / extreme_price * 100 > threshold_pct:
+                turning_pts.append((extreme_idx, 'trough'))
+                direction = 1
+                extreme_price = p
+                extreme_idx = i
+
+    # 加上最后一个端点
+    turning_pts.append((n - 1, 'peak' if direction == 1 else 'trough'))
+
+    if not turning_pts:
+        return fills
+
+    # 3. 填充趋势
+    # 第一个转折点之前：用初始方向（转折当天算原趋势）
+    first_idx, first_type = turning_pts[0]
+    for i in range(0, first_idx + 1):
+        fills[i] = 5 if first_type == 'peak' else 4
+
+    # 转折点之间：从转折点次日开始新趋势
+    for k in range(len(turning_pts) - 1):
+        i1, t1 = turning_pts[k]
+        i2, t2 = turning_pts[k + 1]
+        fill_val = 4 if t1 == 'peak' else 5  # peak后↓, trough后↑
+        for i in range(i1 + 1, i2 + 1):
+            fills[i] = fill_val
+
+    return fills
+
 def generate_consolidated_signal_excel(
     all_signals: List[Dict],
     all_dates: List[str],
@@ -1475,11 +1576,13 @@ def generate_consolidated_signal_excel(
     <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Microsoft YaHei"/></font>
     <font><b/><sz val="10"/><name val="Microsoft YaHei"/></font>
   </fonts>
-  <fills count="4">
+  <fills count="6">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFD9E2F3"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFC8E0C8"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE0C8C8"/></patternFill></fill>
   </fills>
   <borders count="2">
     <border><left/><right/><top/><bottom/><diagonal/></border>
@@ -1492,24 +1595,29 @@ def generate_consolidated_signal_excel(
     </border>
   </borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="4">
+  <cellXfs count="6">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
   </cellXfs>
 </styleSheet>'''
 
     sheets_xml = []
     sheet_names = []
 
+    # 波段T信号 - 趋势检测阈值(%): 回调/反弹超过此值才算趋势反转
+    _TREND_THRESHOLD_PCT = 5.0
+
     # ── Sheet1: 汇总对比表 ──
     periods_order = [f"{p}日" for p in SWING_PERIODS]
-    summary_headers = ["分析日期", "收盘价"] \
+    summary_headers = ["分析日期", "收盘价", "趋势"] \
                     + [f"{p}日-涨跌幅%" for p in SWING_PERIODS] \
                     + [f"{p}日-建议" for p in SWING_PERIODS] \
                     + ["综合胜率%", "MACD", "RSI", "量能", "背离", "综合建议"]
-    summary_widths = [14, 10] + [14]*4 + [14]*4 + [10, 12, 8, 8, 8, 30]
+    summary_widths = [14, 10, 8] + [14]*5 + [14]*5 + [10, 12, 8, 8, 8, 30]
     summary_rows = []
 
     for i, dt in enumerate(all_dates):
@@ -1520,6 +1628,8 @@ def generate_consolidated_signal_excel(
         row = [dt]
         # 收盘价
         row.append(tech.get("收盘价", ""))
+        # 趋势列暂时占位，后续统一填充
+        row.append("")
         signal_map = {}
         for s in sig.get("信号", []):
             signal_map[s["周期"]] = s
@@ -1529,7 +1639,7 @@ def generate_consolidated_signal_excel(
         for p in periods_order:
             s = signal_map.get(p, {})
             row.append(s.get("建议操作", ""))
-        # 综合胜率：取4个周期胜率的均值
+        # 综合胜率：取所有周期胜率的均值
         win_rates = []
         for p in periods_order:
             s = signal_map.get(p, {})
@@ -1547,7 +1657,32 @@ def generate_consolidated_signal_excel(
         ])
         summary_rows.append(row)
 
-    sheets_xml.append(_build_sheet_xml("汇总对比", summary_headers, summary_rows, summary_widths))
+    # ── 检测趋势阶段（收盘价按日期从旧到新排列）──
+    closes = []
+    for sig in all_signals:
+        tech = sig.get("技术指标", {})
+        c = tech.get("收盘价")
+        if isinstance(c, (int, float)):
+            closes.append(c)
+        else:
+            try:
+                closes.append(float(c))
+            except:
+                closes.append(0)
+
+    # closes已经是旧->新顺序，直接传给_detect_trend_phases
+    trend_fills = _detect_trend_phases(closes, _TREND_THRESHOLD_PCT)
+
+    # 将趋势标记写入第3列（summary_rows也是旧->新顺序）
+    trend_labels = {4: "下降趋势", 5: "上升趋势", None: "横盘状态"}
+    for i in range(len(summary_rows)):
+        if i < len(trend_fills):
+            summary_rows[i][2] = trend_labels.get(trend_fills[i], "")
+
+    sheets_xml.append(_build_sheet_xml(
+        "汇总对比", summary_headers, summary_rows, summary_widths,
+        row_fills=trend_fills
+    ))
     sheet_names.append("汇总对比")
 
     # ── 后续: 解读说明（不再逐日生成单独Sheet）──
