@@ -5,16 +5,29 @@
 配置管理器 —— 加载并验证 JSON 格式的股票配置
 
 配置文件 (config.json) 各字段说明：
+
+简化写法（只写名称，代码和文件名自动补全）：
 {
     "stocks": [
         {
-            "stock_name": "神火股份",         // 股票名称，仅用于显示
-            "stock_code": "000933",           // 股票代码，自动匹配深市/沪市
-            "start_date": "2022-04-19",       // 数据起始日期（含当天）
-            "end_date":   "2026-05-18",       // 数据截止日期（含当天）
-            "output_file": "神火股份.xlsx",    // 生成的 Excel 文件名
+            "stock_name": "神火股份",         // 必填：股票名称
+            "start_date": "2020-01-01",        // 数据起始日期
+            "end_date": "2026-05-19",          // 数据截止日期
+            "analysis": { ... }                // 分析参数（可选）
+        }
+    ]
+}
 
-            "analysis": {                     // （可选）分析参数
+完整写法（代码和文件名可手动指定）：
+{
+    "stocks": [
+        {
+            "stock_name": "神火股份",         // 股票名称
+            "stock_code": "000933",           // 股票代码（不填则自动查询）
+            "start_date": "2022-04-19",       // 数据起始日期
+            "end_date":   "2026-05-18",       // 数据截止日期
+            "output_file": "神火股份.xlsx",    // 输出文件名（不填则自动生成）
+            "analysis": {                     // 分析参数（可选）
                 "grid_levels": 4,             // 网格交易档位数
                 "atr_multiplier": 0.5,        // 网格间距 = ATR × 此系数
                 "t_single_qty": 500           // 每笔做T股数，不设则自动估算
@@ -26,12 +39,57 @@
 
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
+import httpx
 
 
 class ConfigError(Exception):
     """配置加载或验证错误"""
     pass
+
+# ── 东方财富搜索API ──
+SEARCH_API_URL = "https://searchadapter.eastmoney.com/api/suggest/get"
+SEARCH_TOKEN = "D43BF722C8E33C0E8E32BADB5C16D1D4"
+
+
+def lookup_stock_code(stock_name: str) -> Optional[str]:
+    """
+    通过股票名称查询股票代码
+
+    Args:
+        stock_name: 股票名称，如 "神火股份"
+
+    Returns:
+        带交易所后缀的股票代码，如 "000933.SZ"；查不到返回 None
+    """
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(SEARCH_API_URL, params={
+                "input": stock_name,
+                "type": 14,
+                "token": SEARCH_TOKEN,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        print(f"  [警告] 股票代码查询失败({stock_name}): {e}")
+        return None
+
+    items = data.get("QuotationCodeTable", {}).get("Data", [])
+    if not items:
+        return None
+
+    # 精确匹配名称（取第一个）
+    code = items[0].get("Code", "")
+    if not code:
+        return None
+
+    # 判断交易所
+    sec_type = items[0].get("SecurityTypeName", "")
+    if "沪" in sec_type or code.startswith(("6", "9")):
+        return f"{code}.SH"
+    else:
+        return f"{code}.SZ"
 
 
 def load_config(config_path: str) -> List[Dict]:
@@ -70,26 +128,41 @@ def load_config_full(config_path: str):
         raise ConfigError("'stocks' 必须是非空数组")
 
     validated = []
-    required_fields = ["stock_code", "output_file"]
 
     for idx, item in enumerate(stocks, 1):
-        for field in required_fields:
-            if field not in item or not item[field]:
-                raise ConfigError(f"第 {idx} 只股票缺少必填字段: {field}")
+        stock_name = item.get("stock_name", "")
+        stock_code = item.get("stock_code", "")
+        output_file = item.get("output_file", "")
 
-        code = str(item["stock_code"]).strip()
-        if not code.endswith(".SZ") and not code.endswith(".SH"):
-            if code.startswith(("6", "9")):
-                code = f"{code}.SH"
-            else:
-                code = f"{code}.SZ"
+        # ── 若没有股票代码，尝试通过名称自动查询 ──
+        if not stock_code:
+            if not stock_name:
+                raise ConfigError(f"第 {idx} 只股票: stock_name 和 stock_code 至少填一个")
+            print(f"  [自动查询] 正在查询「{stock_name}」的股票代码...")
+            stock_code = lookup_stock_code(stock_name)
+            if not stock_code:
+                raise ConfigError(f"第 {idx} 只股票: 未能自动查询到「{stock_name}」的代码，请手动填写 stock_code")
+            print(f"    -> 查到代码: {stock_code}")
+        else:
+            # 已有代码，标准化
+            stock_code = str(stock_code).strip()
+            if not stock_code.endswith(".SZ") and not stock_code.endswith(".SH"):
+                if stock_code.startswith(("6", "9")):
+                    stock_code = f"{stock_code}.SH"
+                else:
+                    stock_code = f"{stock_code}.SZ"
+
+        # ── 若没有输出文件名，自动生成 ──
+        if not output_file:
+            name_part = stock_name if stock_name else stock_code.replace(".SZ", "").replace(".SH", "")
+            output_file = f"{name_part}_{stock_code}抓取数据.xlsx"
 
         validated.append({
-            "stock_name": item.get("stock_name", ""),
-            "stock_code": code,
+            "stock_name": stock_name,
+            "stock_code": stock_code,
             "start_date": item.get("start_date", ""),
             "end_date": item.get("end_date", ""),
-            "output_file": item["output_file"],
+            "output_file": output_file,
             "analysis": item.get("analysis"),
         })
 

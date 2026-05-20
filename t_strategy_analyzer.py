@@ -1465,8 +1465,8 @@ def generate_consolidated_signal_excel(
 
     Sheet结构:
       - 汇总对比: 所有日期的信号概览表
-      - 逐日详情: 每个日期独立一个Sheet
       - 解读说明: 策略说明
+    （不再逐日生成单独Sheet，避免日期过多时文件臃肿）
     """
     styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -1550,21 +1550,7 @@ def generate_consolidated_signal_excel(
     sheets_xml.append(_build_sheet_xml("汇总对比", summary_headers, summary_rows, summary_widths))
     sheet_names.append("汇总对比")
 
-    # ── 后续Sheet: 每个日期单独一个详情 ──
-    for i, dt in enumerate(all_dates):
-        sig = all_signals[i] if i < len(all_signals) else None
-        if not sig:
-            continue
-        info_rows = [
-            ["股票", f"{stock_name}({stock_code})"],
-            ["分析日期", dt],
-            ["数据日期范围", sig.get("数据日期范围", "")],
-            ["综合建议", sig.get("综合建议", "")],
-        ]
-        sheets_xml.append(_build_sheet_xml(dt, ["项目", "内容"], info_rows, [16, 40]))
-        sheet_names.append(dt)
-
-    # ── 最后: 解读说明 ──
+    # ── 后续: 解读说明（不再逐日生成单独Sheet）──
     guide_lines = [
         f"{stock_name}({stock_code}) 波段T信号分析 (多日期合并)",
         "=" * 50,
