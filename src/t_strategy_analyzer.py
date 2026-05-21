@@ -1774,3 +1774,342 @@ def generate_consolidated_signal_excel(
         output_path = fallback
 
     return os.path.abspath(output_path)
+
+
+# ════════════════════════════════════════════════════════════════
+#  七、波段涨跌幅历史分布分析（5/10/20/30/90日）
+# ════════════════════════════════════════════════════════════════
+
+
+def _calc_swing_stats_weighted(indices, vals, total_len):
+    """
+    基于时间顺序计算统计量，较新的数据权重更大（线性衰减）。
+    indices: vals 在原始 returns 中的索引位置
+    vals: 对应的数值列表
+    total_len: 原始 returns 总长度
+    """
+    if not vals:
+        return {'最大值': 0, '平均值': 0, '加权平均': 0, '中位数': 0}
+    s_vals = sorted(vals)
+    nv = len(s_vals)
+    max_v = round(max(s_vals), 2)
+    avg = round(sum(s_vals) / nv, 2)
+    weights = [(idx + 1) for idx in indices]
+    total_w = sum(weights)
+    w_avg = round(sum(v * w for v, w in zip(vals, weights)) / total_w, 2) if total_w > 0 else 0
+    if nv % 2 == 1:
+        med = s_vals[nv // 2]
+    else:
+        med = (s_vals[nv // 2 - 1] + s_vals[nv // 2]) / 2
+    med = round(med, 2)
+    return {'最大值': max_v, '平均值': avg, '加权平均': w_avg, '中位数': med}
+
+
+def _bin_returns_weighted(vals, indices, is_up, bin_width=5.0):
+    """
+    将数值分桶并统计每个桶内数值的加权数量（每个值权重 = 索引+1，越新权重越大）。
+    返回: { "0~5": {"次数": 10, "加权次数": 25.5}, ... }
+    """
+    if not vals:
+        return {}
+    max_val = max(vals)
+    bins = {}
+    b = 0.0
+    while b <= max_val + bin_width * 0.001:
+        low = round(b, 2)
+        high = round(b + bin_width, 2)
+        if is_up:
+            label = f'{low}~{high}'
+        else:
+            label = f'-{high}~-{low}'
+        count = 0
+        w_sum = 0.0
+        for v, idx in zip(vals, indices):
+            weight = idx + 1
+            if low <= v < high or (v == max_val and high > v >= low):
+                count += 1
+                w_sum += weight
+        if count > 0:
+            bins[label] = {'次数': count, '加权次数': round(w_sum, 1)}
+        b += bin_width
+    return bins
+
+
+def analyze_swing_amplitude_distribution(data, periods=None, bin_width=5.0):
+    """
+    统计多周期（5/10/20/30/90日）上涨/下跌幅度历史分布，5%为一阶梯。
+
+    对每个周期：
+      1. 在时间正序数据上滑动窗口，计算 N 日区间涨跌幅
+      2. 将涨跌幅按 5% 宽度分桶，统计每个桶的出现次数（含加权次数）
+      3. 分别统计上涨侧(>0)和下跌侧(<0)的分布
+      4. 计算最大值、平均值、加权平均（线性衰减权重）、中位数
+
+    Args:
+        data: K线数据（最新在前）
+        periods: 统计周期列表（默认 [5, 10, 20, 30, 90]）
+        bin_width: 每个桶的宽度（%），默认 5%
+
+    Returns:
+        {
+            "5": {
+                "数据不足": False,
+                "样本数": N,
+                "range": "min~max",
+                "上涨幅度": { "样本数": N_up, "分布": {...}, "最大值": ..., "平均值": ..., "加权平均": ..., "中位数": ... },
+                "下跌幅度": { ... },
+            },
+            ...
+        }
+    """
+    if periods is None:
+        periods = [5, 10, 20, 30, 90]
+
+    data_asc = list(reversed(data))
+    closes = [row.get('收盘价', 0) or 0 for row in data_asc]
+    n = len(closes)
+
+    result = {}
+    for period in periods:
+        if n <= period:
+            result[str(period)] = {'数据不足': True, '样本数': 0}
+            continue
+
+        returns = []
+        for i in range(period, n):
+            prev = closes[i - period]
+            cur = closes[i]
+            if prev == 0:
+                continue
+            ret = (cur - prev) / prev * 100
+            returns.append(ret)
+
+        if not returns:
+            result[str(period)] = {'数据不足': True, '样本数': 0}
+            continue
+
+        total = len(returns)
+        up_indices = [i for i, r in enumerate(returns) if r > 0]
+        down_indices = [i for i, r in enumerate(returns) if r < 0]
+        up_returns = [returns[i] for i in up_indices]
+        down_returns_abs = [abs(returns[i]) for i in down_indices]
+
+        up_dist = _bin_returns_weighted(up_returns, up_indices, is_up=True, bin_width=bin_width)
+        down_dist = _bin_returns_weighted(down_returns_abs, down_indices, is_up=False, bin_width=bin_width)
+
+        up_stats = _calc_swing_stats_weighted(up_indices, up_returns, total)
+        down_stats = _calc_swing_stats_weighted(down_indices, down_returns_abs, total)
+
+        result[str(period)] = {
+            '数据不足': False,
+            '样本数': total,
+            'range': f'{round(min(returns), 2)} ~ {round(max(returns), 2)}',
+            '上涨幅度': {
+                '样本数': len(up_returns),
+                '分布': up_dist,
+                '最大值': up_stats['最大值'],
+                '平均值': up_stats['平均值'],
+                '加权平均': up_stats['加权平均'],
+                '中位数': up_stats['中位数'],
+            },
+            '下跌幅度': {
+                '样本数': len(down_returns_abs),
+                '分布': down_dist,
+                '最大值': down_stats['最大值'],
+                '平均值': down_stats['平均值'],
+                '加权平均': down_stats['加权平均'],
+                '中位数': down_stats['中位数'],
+            },
+        }
+    return result
+
+
+def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, output_path):
+    """
+    生成波段涨跌幅历史分布分析 Excel
+    """
+    from xml.sax.saxutils import escape as xml_escape
+
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="10"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="10"/><name val="Microsoft YaHei"/></font>
+  </fonts>
+  <fills count="4">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9E2F3"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color auto="1"/></left>
+      <right style="thin"><color auto="1"/></right>
+      <top style="thin"><color auto="1"/></top>
+      <bottom style="thin"><color auto="1"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+  </cellXfs>
+</styleSheet>'''
+
+    sheets_xml = []
+    sheet_names = []
+
+    # Strategy description sheet
+    guide_lines = [
+        '%s(%s) 波段涨跌幅历史分布分析' % (stock_name, stock_code),
+        '=' * 60,
+        '',
+        '【策略说明】',
+        '  统计 5/10/20/30/90 日周期内股价的上涨/下跌幅度分布。',
+        '  以 5% 为一个阶梯，统计各区间出现的次数（加权次数按时间衰减）。',
+        '',
+        '【统计指标】',
+        '  最大值: 该周期内最大的涨跌幅绝对值',
+        '  平均值: 所有样本的简单算术平均',
+        '  加权平均: 按时间线性衰减权重（越近权重越高）',
+        '  中位数: 样本按大小排序后的中间值',
+        '',
+        '【分布解读】',
+        '  分布表显示了涨跌幅在5%区间内的分布次数。',
+        '  上涨幅度侧（正收益）和下跌幅度侧（负收益绝对值）分别统计。',
+        '  加权次数 = 每个样本权重（位置索引+1）之和，越新的数据权重越大。',
+        '',
+        '【用法参考】',
+        '  - 观察哪个区间的密度最高，判断最常见的波段幅度',
+        '  - 比较加权平均与简单平均，判断近期趋势是否偏离历史均值',
+        '  - 最大值可辅助设置止盈止损参考线',
+        '  - 中位数反映典型的波段幅度（不受极端值影响）',
+    ]
+    sheets_xml.append(_build_text_sheet(guide_lines, col_width=90))
+    sheet_names.append('分布分析说明')
+
+    periods_order = ['5', '10', '20', '30', '90']
+    for period_str in periods_order:
+        pd = dist_data.get(period_str, {})
+        if pd.get('数据不足', True):
+            continue
+
+        up = pd.get('上涨幅度', {})
+        down = pd.get('下跌幅度', {})
+
+        # Stats block
+        stats_headers = ['指标', '上涨幅度', '下跌幅度(绝对值)']
+        stats_widths = [12, 14, 18]
+        stats_rows = [
+            ['样本数', up.get('样本数', 0), down.get('样本数', 0)],
+            ['最大值(%)', up.get('最大值', 0), down.get('最大值', 0)],
+            ['平均值(%)', up.get('平均值', 0), down.get('平均值', 0)],
+            ['加权平均(%)', up.get('加权平均', 0), down.get('加权平均', 0)],
+            ['中位数(%)', up.get('中位数', 0), down.get('中位数', 0)],
+        ]
+        sheets_xml.append(_build_sheet_xml('波段' + period_str + '日分布', stats_headers, stats_rows, stats_widths))
+        sheet_names.append('波段' + period_str + '日分布')
+
+        # Distribution details
+        up_dist = up.get('分布', {})
+        down_dist = down.get('分布', {})
+
+        up_labels_sorted = sorted(up_dist.keys(), key=lambda x: float(x.split('~')[0]))
+        down_labels_sorted = sorted(down_dist.keys(), key=lambda x: -float(x.split('~')[1].replace('-', '')))
+
+        dist_headers = ['上涨区间', '上涨次数', '上涨加权次数',
+                        '下跌区间', '下跌次数', '下跌加权次数']
+        dist_widths = [14, 10, 14, 14, 10, 14]
+        dist_rows = []
+
+        max_len = max(len(up_labels_sorted), len(down_labels_sorted))
+        for i in range(max_len):
+            row = []
+            if i < len(up_labels_sorted):
+                lab = up_labels_sorted[i]
+                row.extend([lab, up_dist[lab]['次数'], up_dist[lab]['加权次数']])
+            else:
+                row.extend(['', '', ''])
+            if i < len(down_labels_sorted):
+                lab = down_labels_sorted[i]
+                row.extend([lab, down_dist[lab]['次数'], down_dist[lab]['加权次数']])
+            else:
+                row.extend(['', '', ''])
+            dist_rows.append(row)
+
+        sheets_xml.append(_build_sheet_xml('波段' + period_str + '日详情', dist_headers, dist_rows, dist_widths))
+        sheet_names.append('波段' + period_str + '日详情')
+
+    if len(sheets_xml) <= 1:
+        sheets_xml.append(_build_sheet_xml('数据状态', ['提示'], [['数据不足，无法生成分布分析']], [30]))
+        sheet_names.append('数据状态')
+
+    # Build workbook
+    sheet_refs = '\n'.join(
+        '    <sheet name="' + xml_escape(name) + '" sheetId="' + str(i+1) + '" r:id="rId' + str(i+1) + '"/>'
+        for i, name in enumerate(sheet_names)
+    )
+    workbook_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+''' + sheet_refs + '''
+  </sheets>
+</workbook>'''
+
+    sheet_rels = '\n'.join(
+        '  <Relationship Id="rId' + str(i+1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + str(i+1) + '.xml"/>'
+        for i in range(len(sheet_names))
+    )
+    workbook_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+''' + sheet_rels + '''
+  <Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+'''
+    for i in range(len(sheet_names)):
+        content_types_xml += '  <Override PartName="/xl/worksheets/sheet' + str(i+1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+    content_types_xml += '</Types>'
+
+    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    def _try_write(path):
+        import zipfile
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('[Content_Types].xml', content_types_xml.encode('utf-8'))
+            zf.writestr('_rels/.rels', root_rels_xml.encode('utf-8'))
+            zf.writestr('xl/workbook.xml', workbook_xml.encode('utf-8'))
+            zf.writestr('xl/_rels/workbook.xml.rels', workbook_rels_xml.encode('utf-8'))
+            for i, sheet_xml in enumerate(sheets_xml):
+                zf.writestr('xl/worksheets/sheet' + str(i+1) + '.xml', sheet_xml.encode('utf-8'))
+            zf.writestr('xl/styles.xml', styles_xml.encode('utf-8'))
+
+    try:
+        _try_write(output_path)
+    except PermissionError:
+        import time
+        base, ext = os.path.splitext(output_path)
+        fallback = base + '_' + str(int(time.time())) + ext
+        print('  [注意] Excel文件被占用，另存为: ' + os.path.basename(fallback))
+        _try_write(fallback)
+        output_path = fallback
+
+    return os.path.abspath(output_path)

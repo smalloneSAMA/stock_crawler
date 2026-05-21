@@ -48,6 +48,8 @@ from t_strategy_analyzer import (
     generate_t_excel,
     generate_current_signal_excel,
     generate_consolidated_signal_excel,
+    analyze_swing_amplitude_distribution,
+    generate_amplitude_distribution_excel,
     SWING_PERIODS,
 )
 
@@ -462,6 +464,51 @@ def main():
 
         except Exception as e:
             print(f"  [警告] T策略分析失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # ── 2f. 波段涨跌幅历史分布分析（5/10/20/30/90日）──
+        print(f"\n{'─' * 50}")
+        print("[分布] 正在分析波段涨跌幅历史分布...")
+        try:
+            dist_result = analyze_swing_amplitude_distribution(
+                data, periods=[5, 10, 20, 30, 90], bin_width=5.0
+            )
+            # 打印统计结果
+            for p_str in ['5', '10', '20', '30', '90']:
+                pd = dist_result.get(p_str, {})
+                if pd.get('数据不足', True):
+                    continue
+                print(f"  [{p_str}日] 样本:{pd['样本数']}  "
+                      f"范围:{pd['range']}%")
+                for side, label in [('上涨幅度', '上涨'), ('下跌幅度', '下跌')]:
+                    sd = pd.get(side, {})
+                    print(f"    {label}: 最大={sd['最大值']}% "
+                          f"平均={sd['平均值']}% "
+                          f"加权平均={sd['加权平均']}% "
+                          f"中位数={sd['中位数']}% "
+                          f"样本数={sd['样本数']}")
+                    # 分布详情（取前5个密度最高的区间）
+                    dist_d = sd.get('分布', {})
+                    top5 = sorted(dist_d.items(), key=lambda x: x[1]['次数'], reverse=True)[:5]
+                    if top5:
+                        parts = [f"{k}:{v['次数']}次({v['加权次数']:.0f}w)" for k, v in top5]
+                        print(f"      密集区间: {' | '.join(parts)}")
+
+            # 生成分布分析Excel
+            dist_output = os.path.join(
+                t_analysis_dir,
+                config.get("output_file", "report").replace(".xlsx", "_波段涨跌幅分布.xlsx"),
+            )
+            generate_amplitude_distribution_excel(
+                dist_result,
+                config.get("stock_name", ""),
+                config["stock_code"],
+                dist_output,
+            )
+            print(f"  [分布] 已保存: {os.path.abspath(dist_output)}")
+        except Exception as e_dist:
+            print(f"  [警告] 波段涨跌幅分布分析失败: {e_dist}")
             import traceback
             traceback.print_exc()
 
