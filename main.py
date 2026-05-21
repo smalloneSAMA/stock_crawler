@@ -32,7 +32,7 @@ from config_manager import ConfigError, load_config, load_config_full, print_con
 from data_fetcher import DataFetchError, fetch_stock_data
 from excel_generator import ExcelGenerateError, generate_excel
 from financial_fetcher import FinancialFetchError, enrich_kline_with_financials
-from stock_analyzer import analyze_and_print
+from stock_analyzer import analyze_and_print, generate_buy_sell_report_md, md_to_image
 from cache_manager import (
     get_cache_path,
     load_from_cache,
@@ -105,10 +105,12 @@ def main():
     cache_dir = os.path.join(base_dir, "cache")     # 缓存数据存放目录
     report_dir = os.path.join(base_dir, "output")   # 分析报告存放目录
     t_analysis_dir = os.path.join(base_dir, "t_analysis")  # T策略分析报告存放目录
+    photo_dir = os.path.join(base_dir, "photo")     # 报告图片存放目录
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(report_dir, exist_ok=True)
     os.makedirs(t_analysis_dir, exist_ok=True)
+    os.makedirs(photo_dir, exist_ok=True)
 
     # ── 2. 逐只股票抓取 + 分析 ──
     total_ok = 0    # 成功处理的股票数
@@ -290,6 +292,10 @@ def main():
         # ── 2e. T策略分析（日内做T + 波段做T）──
         print(f"\n{'─' * 50}")
         print("[T策略] 正在分析日内做T及波段做T胜率...")
+        # 初始化用于买卖建议报告的数据变量
+        intraday_result = None
+        swing_result = None
+        all_signals = None
         try:
             raw_code = config["stock_code"].replace(".SZ", "").replace(".SH", "")
             t_output = os.path.join(
@@ -394,7 +400,6 @@ def main():
                 from t_strategy_analyzer import _build_tech_comment
                 all_signals = []
                 try:
-                    # 只处理实际交易日（过滤周末/节假日）
                     actual_dates = sorted(set(r["日期"] for r in data if r.get("日期")))
                     valid_dates = [d for d in t_analysis_dates if d in actual_dates]
                     skipped = len(t_analysis_dates) - len(valid_dates)
@@ -470,6 +475,7 @@ def main():
         # ── 2f. 波段涨跌幅历史分布分析（5/10/20/30/90日）──
         print(f"\n{'─' * 50}")
         print("[分布] 正在分析波段涨跌幅历史分布...")
+        dist_result = None
         try:
             dist_result = analyze_swing_amplitude_distribution(
                 data, periods=[5, 10, 20, 30, 90], bin_width=5.0
@@ -518,6 +524,49 @@ def main():
             print(f"  [分布] 已保存: {os.path.abspath(dist_output)}")
         except Exception as e_dist:
             print(f"  [警告] 波段涨跌幅分布分析失败: {e_dist}")
+            import traceback
+            traceback.print_exc()
+
+        # ── 2g. 生成买卖建议报告（Markdown格式）──
+        print(f"\n{'─' * 50}")
+        print("[买卖建议] 正在生成买卖建议报告...")
+        try:
+            # 取最新的波段信号（多日期时取最后一天）
+            latest_signal = None
+            if all_signals:
+                latest_signal = all_signals[-1] if len(all_signals) > 1 else all_signals[0]
+
+            md_report = generate_buy_sell_report_md(
+                stock_name=config.get("stock_name", ""),
+                stock_code=config["stock_code"],
+                data=data,
+                analysis_config=config.get("analysis"),
+                intraday_result=intraday_result,
+                swing_result=swing_result,
+                swing_signals=[latest_signal] if latest_signal else None,
+                distribution_result=dist_result,
+            )
+
+            # 保存为 .md 文件
+            latest_date_str = data[0].get("日期", datetime.now().strftime("%Y-%m-%d")) if data else datetime.now().strftime("%Y-%m-%d")
+            stock_code_short = config["stock_code"].replace(".SZ", "").replace(".SH", "")
+            stock_name_short = config.get("stock_name", stock_code_short)
+            md_filename = f"{latest_date_str}{stock_name_short}买卖建议报告.md"
+            md_file = os.path.join(report_dir, md_filename)
+            with open(md_file, "w", encoding="utf-8") as f:
+                f.write(md_report)
+            print(f"  [买卖建议] 已保存: {os.path.abspath(md_file)}")
+
+            # ── 同步转图片 ──
+            img_filename = md_filename.replace(".md", ".png")
+            img_file = os.path.join(photo_dir, img_filename)
+            print(f"  [转图片] 正在生成报告图片...")
+            if md_to_image(md_report, img_file):
+                print(f"  [转图片] 已保存: {os.path.abspath(img_file)}")
+            else:
+                print(f"  [转图片] 转换失败，跳过")
+        except Exception as e_md:
+            print(f"  [警告] 买卖建议报告生成失败: {e_md}")
             import traceback
             traceback.print_exc()
 

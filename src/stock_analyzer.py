@@ -972,3 +972,845 @@ def analyze_and_print(
     report = generate_decision_report(stock_name, stock_code, data, analysis_config)
     print("\n" + report)
     return report
+
+
+def generate_buy_sell_report_md(
+    stock_name: str,
+    stock_code: str,
+    data: List[Dict],
+    analysis_config: Optional[Dict] = None,
+    intraday_result: Optional[Dict] = None,
+    swing_result: Optional[Dict] = None,
+    swing_signals: Optional[List[Dict]] = None,
+    distribution_result: Optional[Dict] = None,
+) -> str:
+    """
+    生成 Markdown 格式的买卖建议报告
+
+    综合趋势分析 + 估值分析 + 波动降本分析 + 波段T信号 + 日内做T统计 + 波段涨跌幅分布
+    """
+    closes = [row.get("收盘价", 0) or 0 for row in data]
+    highs  = [row.get("最高价", 0) or 0 for row in data]
+    lows   = [row.get("最低价", 0) or 0 for row in data]
+    volumes = [row.get("成交量(万手)", 0) or 0 for row in data]
+
+    trend = analyze_trend(closes, highs, lows, volumes)
+    valuation = analyze_valuation(data)
+    volatility = analyze_volatility(data, analysis_config)
+
+    td = trend["detail"]
+    vd = valuation.get("detail", {})
+    vod = volatility.get("detail", {})
+
+    latest = data[0] if data else {}
+    price = latest.get("收盘价", "?")
+    latest_date = latest.get("日期", "")
+    total_days = len(data)
+
+    lines = []
+    def L(s=""): lines.append(s)
+
+    now_str = datetime.now().strftime("%Y-%m-%d")
+    code_clean = stock_code.replace(".SZ", "").replace(".SH", "")
+
+    # ═══════ 标题 ═══════
+    L(f"### **{stock_name}([{stock_code}](https://{code_clean}.sz/)) - 次日交易决策支持报告**")
+    L()
+    L(f"**报告日期：** {now_str}")
+    L(f"**分析数据截止：** {latest_date}")
+    L(f"**目标交易日期：** {latest_date}次日")
+    L()
+    L("---")
+    L()
+
+    # ═══════ 一、股票基础信息与估值分位 ═══════
+    L("### **一、 股票基础信息与估值分位**")
+    L()
+
+    cv = vd.get("当前估值", {})
+    cur_pe = cv.get("PE(TTM)", "?")
+    cur_pb = cv.get("PB", "?")
+    cur_roe = cv.get("ROE%", "?")
+    cur_dy = cv.get("股息率TTM%", "?")
+    cur_eps = cv.get("每股收益", "?")
+    cur_mc = latest.get("当前市值(亿)", "?")
+
+    # 价格百分位计算
+    sorted_closes = sorted([row.get("收盘价", 0) or 0 for row in data if row.get("收盘价")])
+    if sorted_closes and price != "?":
+        below = sum(1 for c in sorted_closes if c <= price)
+        price_pct = round(below / len(sorted_closes) * 100, 1)
+        price_min = round(min(sorted_closes), 2)
+        price_median = round(sorted_closes[len(sorted_closes)//2], 2)
+        price_max = round(max(sorted_closes), 2)
+        price_pct_str = f"**{price_pct}%**"
+        price_note = f"基于{total_days}个交易日数据统计（最低{price_min}元，中位{price_median}元，最高{price_max}元）。"
+        if price_pct >= 90:
+            price_note += "当前价格处于历史极高位。"
+        elif price_pct >= 70:
+            price_note += "当前价格处于历史偏高位。"
+        elif price_pct >= 30:
+            price_note += "当前价格处于历史中位区间。"
+        else:
+            price_note += "当前价格处于历史低位区间。"
+    else:
+        price_pct_str = "N/A"
+        price_note = "数据不足"
+
+    # PE百分位
+    pe_hist = vd.get("历史PE对比", {})
+    pe_pct_str = pe_hist.get("百分位", "N/A")
+    pe_min = pe_hist.get("最低", "?")
+    pe_med = pe_hist.get("中位", "?")
+    pe_max = pe_hist.get("最高", "?")
+
+    # PB百分位
+    pb_hist = vd.get("历史PB对比", {})
+    pb_pct_str = pb_hist.get("百分位", "N/A")
+    pb_min = pb_hist.get("最低", "?")
+    pb_med = pb_hist.get("中位", "?")
+    pb_max = pb_hist.get("最高", "?")
+
+    # ROE质量
+    qa = vd.get("质量评估", {})
+    roe_quality = qa.get("ROE质量", "?")
+
+    L("| 项目 | 数值 | 历史分位 | 说明 |")
+    L("| --- | --- | --- | --- |")
+    L(f"| **最新收盘价** | {price} 元 | {price_pct_str} | {price_note} |")
+    pe_pct_display = pe_pct_str if pe_pct_str != "N/A" else "N/A"
+    pe_note = f"基于历史数据统计（最低{pe_min}，中位{pe_med}，最高{pe_max}）。"
+    if "%" in str(pe_pct_str):
+        pe_val = float(str(pe_pct_str).replace("%", ""))
+        if pe_val >= 80:
+            pe_note += "当前PE处于历史高位，估值偏贵。"
+        elif pe_val >= 60:
+            pe_note += "当前PE处于历史中偏高位。"
+        elif pe_val >= 40:
+            pe_note += "当前PE处于历史中位区间。"
+        else:
+            pe_note += "当前PE处于历史低位，估值有吸引力。"
+    L(f"| **市盈率TTM** | {cur_pe} | **{pe_pct_str}** | {pe_note} |")
+    pb_note = f"基于历史数据统计（最低{pb_min}，中位{pb_med}，最高{pb_max}）。"
+    if "%" in str(pb_pct_str):
+        pb_val = float(str(pb_pct_str).replace("%", ""))
+        if pb_val >= 80:
+            pb_note += "当前PB处于历史高位。"
+        elif pb_val >= 60:
+            pb_note += "当前PB处于历史中偏高位。"
+        elif pb_val >= 40:
+            pb_note += "当前PB处于历史中位区间。"
+        else:
+            pb_note += "当前PB处于历史低位。"
+    L(f"| **市净率MRQ** | {cur_pb} | **{pb_pct_str}** | {pb_note} |")
+
+    # 市值百分位
+    mc_values = [row.get("当前市值(亿)", 0) or 0 for row in data if row.get("当前市值(亿)")]
+    if mc_values and cur_mc != "?":
+        mc_sorted = sorted(mc_values)
+        mc_below = sum(1 for m in mc_sorted if m <= cur_mc)
+        mc_pct = round(mc_below / len(mc_sorted) * 100, 1)
+        mc_min = round(min(mc_sorted), 2)
+        mc_med = round(mc_sorted[len(mc_sorted)//2], 2)
+        mc_max = round(max(mc_sorted), 2)
+        mc_note = f"基于历史数据统计（最低{mc_min}亿，中位{mc_med}亿，最高{mc_max}亿）。"
+        if mc_pct >= 90:
+            mc_note += "当前市值处于历史极高位。"
+        elif mc_pct >= 70:
+            mc_note += "当前市值处于历史偏高位。"
+        else:
+            mc_note += "当前市值处于历史中低位。"
+        L(f"| **总市值** | {cur_mc} 亿元 | **{mc_pct}%** | {mc_note} |")
+    else:
+        L(f"| **总市值** | {cur_mc} 亿元 | N/A | 数据不足 |")
+    L(f"| **ROE** | {cur_roe}% | {roe_quality} | {qa.get('近3年均ROE%', '?')}% |")
+    dy_level = qa.get("股息率水平", "?")
+    L(f"| **股息率** | {cur_dy}% | {dy_level} | 近3年均ROE {qa.get('近3年均ROE%', '?')}% |")
+    L()
+    L("> **说明：** 估值分位基于全量历史数据计算，百分位越低表示估值越便宜。")
+    L()
+    L("---")
+    L()
+
+    # ═══════ 二、价格与波段涨跌幅历史分位 ═══════
+    L("### **二、 价格与波段涨跌幅历史分位**")
+    L()
+    L("本部分评估当前价格在不同周期内的位置，判断是处于高位还是低位。")
+    L()
+
+    period_labels = {'5': 5, '10': 10, '20': 20, '30': 30, '90': 90}
+
+    # 计算各周期最新涨跌幅
+    def _latest_swing_ret(period_days):
+        if len(closes) <= period_days:
+            return None
+        prev = closes[period_days]
+        if prev == 0:
+            return None
+        return round((closes[0] - prev) / prev * 100, 2)
+
+    L("| 周期 | 最新波段涨跌幅 | 所处历史分位 | 历史均值 | 历史中位数 | 解读 |")
+    L("| --- | --- | --- | --- | --- | --- |")
+
+    for p_str, p_days in sorted(period_labels.items()):
+        latest_ret = _latest_swing_ret(p_days)
+        if latest_ret is None:
+            continue
+
+        # 从 distribution_result 获取分布数据
+        dist_pd = (distribution_result or {}).get(p_str, {})
+        if dist_pd.get("数据不足", True):
+            # 备用：简单提及
+            direction = "上涨" if latest_ret > 0 else "下跌"
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | 数据不足 | - | - | 数据不足以计算历史分位 |")
+            continue
+
+        up_s = dist_pd.get("上涨幅度", {})
+        down_s = dist_pd.get("下跌幅度", {})
+
+        up_mean = up_s.get("平均值", 0)
+        up_median = up_s.get("中位数", 0)
+        down_mean = down_s.get("平均值", 0)
+        down_median = down_s.get("中位数", 0)
+
+        if latest_ret >= 0:
+            # 上涨：对比上涨分布
+            mean_val = up_mean
+            median_val = up_median
+            # 估算分位：在上涨样本中的位置
+            up_dist = up_s.get("分布", {})
+            sorted_ranges = sorted(up_dist.keys(), key=lambda x: float(x.split("~")[0]))
+            # 找到所在区间索引
+            found_range = None
+            for rk in sorted_ranges:
+                parts = rk.split("~")
+                lo = float(parts[0])
+                hi = float(parts[1]) if len(parts) > 1 else 999
+                if lo <= latest_ret < hi:
+                    found_range = rk
+                    break
+            # 累计所有低于当前涨跌幅的加权次数
+            total_up_w = sum(v.get("加权次数", 0) for v in up_dist.values())
+            below_w = sum(v.get("加权次数", 0) for rk, v in up_dist.items()
+                          if float(rk.split("~")[0]) < latest_ret)
+            est_pct = round(below_w / total_up_w * 100, 1) if total_up_w > 0 else 50
+            if est_pct < 20:
+                pct_desc = f"**约0% - 20%**"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，远低于历史均值{mean_val:.2f}%，处于历史极低分位，表明近{p_str}日涨幅远低于历史常态。"
+            elif est_pct < 40:
+                pct_desc = f"**约20% - 40%**"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，低于历史均值{mean_val:.2f}%，处于历史较低分位。"
+            elif est_pct < 60:
+                pct_desc = f"**约40% - 60%**"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，接近历史中位数{median_val:.2f}%，处于历史中位区间。"
+            elif est_pct < 80:
+                pct_desc = f"**约60% - 80%**"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，高于历史均值{mean_val:.2f}%，处于历史较高分位。"
+            else:
+                pct_desc = f"**约80% - 100%**"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，远高于历史均值{mean_val:.2f}%，处于历史极高位置。"
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (涨幅) | {median_val:.2f}% (涨幅) | {note} |")
+        else:
+            ret_abs = abs(latest_ret)
+            # 下跌：对比下跌分布（绝对值）
+            mean_val = down_mean
+            median_val = down_median
+            down_dist = down_s.get("分布", {})
+            total_down_w = sum(v.get("加权次数", 0) for v in down_dist.values())
+            below_w = sum(v.get("加权次数", 0) for rk, v in down_dist.items()
+                          if float(rk.split("~")[0]) < ret_abs)
+            est_pct = round(below_w / total_down_w * 100, 1) if total_down_w > 0 else 50
+            pct_desc = f"**约{max(0, 100-est_pct-10):.0f}% - {min(100, 100-est_pct+10):.0f}%**"
+            if ret_abs > mean_val:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%超过历史均值{mean_val:.2f}%，处于历史较低分位，回调较深。"
+            elif ret_abs > median_val:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%超过历史中位数{median_val:.2f}%，处于历史中等偏低分位。"
+            else:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%小于历史中位数{median_val:.2f}%，回调幅度较小。"
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (跌幅) | {median_val:.2f}% (跌幅) | {note} |")
+
+    L()
+    L("---")
+    L()
+
+    # ═══════ 三、当日综合策略信号 ═══════
+    L("### **三、 当日综合策略信号（核心结论）**")
+    L()
+
+    # 使用 swing_signals (来自 analyze_current_swing_signal 的返回)
+    signal_row = None
+    if swing_signals and len(swing_signals) > 0:
+        signal_row = swing_signals[-1]  # 取最新的
+
+    if signal_row and signal_row.get("信号"):
+        sig_list = signal_row["信号"]
+        tech = signal_row.get("技术指标", {})
+        overall = signal_row.get("综合建议", "")
+
+        L("| 项目 | 信号及数值 | 解读 |")
+        L("| --- | --- | --- |")
+
+        # 各周期信号
+        for sig in sig_list:
+            period = sig["周期"]
+            ret = sig.get("区间涨跌幅%", 0)
+            action = sig.get("建议操作", "观望")
+            action_display = {
+                "买入(正T)": "**买入(正T)**",
+                "卖出(反T)": "**卖出(反T)**",
+                "观望": "**观望**",
+            }.get(action, f"**{action}**")
+            threshold = sig.get("触发阈值%", "-")
+            win_rate = sig.get("历史胜率%", "-")
+
+            if action == "买入(正T)":
+                note = f"近{period}下跌{abs(ret):.2f}%超过阈值{threshold}%，触发波段正T买入信号。"
+            elif action == "卖出(反T)":
+                note = f"近{period}上涨{ret:.2f}%达到阈值{threshold}%，触发波段反T卖出信号。"
+            else:
+                note = f"近{period}涨跌幅{ret:+.2f}%，未达阈值，无强烈交易信号。"
+            L(f"| **{period}周期建议** | {action_display} | {note} |")
+
+        # 计算综合胜率（取所有周期信号胜率的均值，与Excel一致）
+        win_rates = []
+        for s in sig_list:
+            wr = s.get("历史胜率%", "")
+            if isinstance(wr, (int, float)):
+                win_rates.append(wr)
+        combined_win_rate = round(sum(win_rates) / len(win_rates), 1) if win_rates else "-"
+        L(f"| **综合胜率** | **{combined_win_rate}%** | 基于历史统计，所有触发信号的周期（正T/反T）的平均胜率。 |")
+        L(f"| **MACD方向** | **{tech.get('MACD方向', 'N/A')}** | 中期趋势指标，对交易信号方向形成支撑或警示。 |")
+        rsi_val = tech.get("RSI", "N/A")
+        rsi_note = "处于超买区域(>70)，注意回调风险。" if isinstance(rsi_val, (int, float)) and rsi_val > 70 else \
+                   "处于超卖区域(<30)，关注反弹机会。" if isinstance(rsi_val, (int, float)) and rsi_val < 30 else \
+                   "处于30-70中性区间。"
+        L(f"| **RSI值** | **{rsi_val}** | {rsi_note} |")
+        L(f"| **量能状态** | **{tech.get('成交量', 'N/A')}** | 成交量放量/缩量/正常，影响信号强度。 |")
+        L(f"| **背离类型** | **{tech.get('背离', '无')}** | 顶背离或底背离增强/削弱信号可靠性。 |")
+        L(f"| **综合建议** | **{overall}** | **这是本报告的最终交易指向。** |")
+    else:
+        # 无信号数据，使用趋势分析结论
+        L("| 项目 | 结论 | 说明 |")
+        L("| --- | --- | --- |")
+        L(f"| **趋势评分** | **{trend['score']}/100** | {trend['verdict']} - {trend['reason']} |")
+        L(f"| **估值评分** | **{valuation.get('score', '?')}/100** | {valuation['verdict']} |")
+        tech = td.get("技术指标", {})
+        macd = tech.get("MACD", {})
+        L(f"| **MACD方向** | **{macd.get('方向', 'N/A')}** | 中期趋势方向 |")
+        rsi_val = tech.get("RSI(14)", "N/A")
+        L(f"| **RSI值** | **{rsi_val}** | {tech.get('RSI判断', '')} |")
+        L(f"| **综合建议** | **{trend['verdict']} + {valuation['verdict']}** | 结合趋势与估值的综合判断 |")
+
+    L()
+    L("---")
+    L()
+
+    # ═══════ 四、辅助决策信息 ═══════
+    L("### **四、 辅助决策信息**")
+    L()
+
+    # 4.1 日内做T策略参考
+    L("#### **4.1 日内做T策略参考**")
+    L()
+    # 提前初始化日内T变量，防止后面引用时报错
+    best_zt_idx = -1
+    best_ft_idx = -1
+    zt_th = zt_win = zt_day = zt_ret = 0
+    ft_th = ft_win = ft_day = ft_ret = 0
+
+    if intraday_result and not intraday_result.get("数据不足", True):
+        bs = intraday_result.get("基础统计", {})
+        total_td = bs.get("总交易日", 0)
+        L(f"如果您计划进行日内交易，可以参考以下基于{total_td}个交易日统计的最佳阈值：")
+        L()
+
+        # 找最佳正T梯度
+        zt = intraday_result.get("正T", {})
+        zt_grads = zt.get("梯度", [])
+        zt_wins = zt.get("胜率%", [])
+        zt_days = zt.get("触发天数", [])
+        zt_returns = zt.get("平均收益%", [])
+        best_zt_idx = -1
+        for i in range(len(zt_grads)):
+            if zt_days[i] >= 5:
+                if best_zt_idx == -1 or zt_wins[i] > zt_wins[best_zt_idx]:
+                    best_zt_idx = i
+
+        # 找最佳反T梯度
+        ft = intraday_result.get("反T", {})
+        ft_grads = ft.get("梯度", [])
+        ft_wins = ft.get("胜率%", [])
+        ft_days = ft.get("触发天数", [])
+        ft_returns = ft.get("平均收益%", [])
+        best_ft_idx = -1
+        for i in range(len(ft_grads)):
+            if ft_days[i] >= 5:
+                if best_ft_idx == -1 or ft_wins[i] > ft_wins[best_ft_idx]:
+                    best_ft_idx = i
+
+        # 也找次优梯度（用于显示范围）
+
+
+        L("| 策略类型 | 最佳阈值 | 胜率 | 触发次数 | 平均收益 | 执行方式 |")
+        L("| --- | --- | --- | --- | --- | --- |")
+
+        if best_zt_idx >= 0:
+            zt_th = zt_grads[best_zt_idx]
+            zt_win = zt_wins[best_zt_idx]
+            zt_day = zt_days[best_zt_idx]
+            zt_ret = zt_returns[best_zt_idx]
+            fut_price_low = round(price * (1 - zt_th / 100), 2) if isinstance(price, (int, float)) else "?"
+            L(f"| **日内正T (先买后卖)** | **{zt_th:.1f}%** | {zt_win:.1f}% | {zt_day}次 | {zt_ret:.2f}% | 开盘下跌超过**{zt_th:.1f}%** 时买入，收盘卖出。 |")
+
+        if best_ft_idx >= 0:
+            ft_th = ft_grads[best_ft_idx]
+            ft_win = ft_wins[best_ft_idx]
+            ft_day = ft_days[best_ft_idx]
+            ft_ret = ft_returns[best_ft_idx]
+            fut_price_high = round(price * (1 + ft_th / 100), 2) if isinstance(price, (int, float)) else "?"
+            L(f"| **日内反T (先卖后买)** | **{ft_th:.1f}%** | {ft_win:.1f}% | {ft_day}次 | {ft_ret:.2f}% | 开盘上涨超过**{ft_th:.1f}%** 时卖出，收盘买回。 |")
+
+        L()
+        L("**执行建议：**")
+        L()
+        if best_zt_idx >= 0:
+            fut_price_low = round(price * (1 - zt_th / 100), 2) if isinstance(price, (int, float)) else "?"
+            L(f"* 若次日开盘价较今日收盘价 **下跌超过{zt_th:.1f}%（即低于约{fut_price_low}元）** ，可执行日内正T，历史胜率超{zt_win:.0f}%。")
+        if best_ft_idx >= 0:
+            fut_price_high = round(price * (1 + ft_th / 100), 2) if isinstance(price, (int, float)) else "?"
+            L(f"* 若次日开盘价 **上涨超过{ft_th:.1f}%（即高于约{fut_price_high}元）** ，可执行日内反T，历史胜率{ft_win:.1f}%，需注意上涨趋势中可能卖飞。")
+    else:
+        L("日内做T数据不足，无法提供策略参考。")
+    L()
+
+    # 4.2 技术指标共振检验
+    L("#### **4.2 技术指标共振检验**")
+    L()
+    tech = td.get("技术指标", {})
+    macd_dir = tech.get("MACD", {}).get("方向", "N/A")
+    rsi_val = tech.get("RSI(14)", "N/A")
+    rsi_judge = tech.get("RSI判断", "")
+
+    # 计算多少周期发出正T/反T信号
+    zt_count = len([s for s in (signal_row.get("信号", []) if signal_row else []) if s.get("信号类型") == "正T"])
+    ft_count = len([s for s in (signal_row.get("信号", []) if signal_row else []) if s.get("信号类型") == "反T"])
+
+    has_zts = zt_count >= 2
+    has_fts = ft_count >= 2
+    macd_bull = "金叉" in str(macd_dir) or "多头" in str(macd_dir) or "上方" in str(macd_dir)
+    macd_bear = "死叉" in str(macd_dir) or "空头" in str(macd_dir) or "下方" in str(macd_dir)
+
+    # 共振判断
+    if has_zts and macd_bull:
+        resonance = "**强共振**"
+        resonance_note = "中期趋势（MACD金叉）与多个波段周期超卖信号（正T买入）形成方向一致，增加了买入策略的可靠性。"
+    elif has_fts and macd_bear:
+        resonance = "**强共振**"
+        resonance_note = "中期趋势（MACD死叉）与多个波段周期超买信号（反T卖出）形成方向一致，增加了卖出策略的可靠性。"
+    elif has_zts:
+        resonance = "**中等共振**"
+        resonance_note = "多个波段周期发出正T买入信号，但MACD尚未形成金叉共振，需谨慎。"
+    elif has_fts:
+        resonance = "**中等共振**"
+        resonance_note = "多个波段周期发出反T卖出信号，但MACD尚未形成死叉共振，需谨慎。"
+    else:
+        resonance = "**弱共振/无共振**"
+        resonance_note = "波段信号与趋势指标未形成明显共振，建议观望。"
+
+    L(f"* **趋势共振：** `MACD:{macd_dir}` + `波段信号:正T{zt_count}个/反T{ft_count}个` = {resonance}。{resonance_note}")
+
+    # 风险因素
+    risk_parts = []
+    if isinstance(rsi_val, (int, float)):
+        if rsi_val > 70:
+            risk_parts.append(f"RSI={rsi_val}处于超买区域，注意回调风险。")
+        elif rsi_val < 30:
+            risk_parts.append(f"RSI={rsi_val}处于超卖区域，下跌空间可能有限，但尚未出现明确底部反转信号。")
+        else:
+            risk_parts.append(f"RSI={rsi_val}并非极端值，市场处于正常波动区间。")
+
+    if risk_parts:
+        L(f"* **风险因素：** {' '.join(risk_parts)}")
+    L()
+    L("---")
+    L()
+
+    # ═══════ 五、最终交易建议总结 ═══════
+    L("### **五、 最终交易建议总结**")
+    L()
+
+    # ════════════════════════════════════════════════════════
+    #  新逻辑：以波段T信号为核心，MACD/RSI/量能/背离为辅助确认
+    #  结合波段涨跌幅分布判断极端程度
+    # ════════════════════════════════════════════════════════
+
+    # ── 1. 波段T信号加权评分 ──
+    # 周期权重：越长周期权重越大（5日=1, 10日=2, 20日=3, 30日=4, 90日=5）
+    period_weights = {"5日": 1, "10日": 2, "20日": 3, "30日": 4, "90日": 5}
+    zt_weighted = 0   # 正T加权得分
+    ft_weighted = 0   # 反T加权得分
+    total_weight = 0
+    period_details = []  # 各周期详细描述
+
+    if signal_row and signal_row.get("信号"):
+        sig_list = signal_row["信号"]
+        for s in sig_list:
+            period = s["周期"]
+            sig_type = s.get("信号类型", "无信号")
+            ret = s.get("区间涨跌幅%", 0)
+            win_rate = s.get("历史胜率%", "-")
+            w = period_weights.get(period, 1)
+            total_weight += w
+            if sig_type == "正T":
+                zt_weighted += w
+                period_details.append(f"{period}跌{s.get('触发阈值%','?')}%触发正T(胜率{win_rate}%)")
+            elif sig_type == "反T":
+                ft_weighted += w
+                period_details.append(f"{period}涨{ret:.1f}%触发反T(胜率{win_rate}%)")
+            else:
+                period_details.append(f"{period}涨跌{ret:+.1f}%无信号")
+
+    # 波段倾向净得分：-100~+100，正=偏多，负=偏空
+    if total_weight > 0:
+        net_score = round((zt_weighted - ft_weighted) / total_weight * 100, 0)
+    else:
+        net_score = 0
+
+    # ── 2. MACD方向确认 ──
+    macd_bull = ("金叉" in str(macd_dir) or "多头" in str(macd_dir) or "上方" in str(macd_dir)) and "下方" not in str(macd_dir) and "空头" not in str(macd_dir)
+    macd_bear = "死叉" in str(macd_dir) or "空头" in str(macd_dir) or "下方" in str(macd_dir)
+
+    # ── 3. RSI状态 ──
+    rsi_oversold = isinstance(rsi_val, (int, float)) and rsi_val < 30
+    rsi_overbought = isinstance(rsi_val, (int, float)) and rsi_val > 70
+    rsi_neutral = isinstance(rsi_val, (int, float)) and 30 <= rsi_val <= 70
+
+    # ── 4. 背离检测（取信号中各周期背离的多数情况）──
+    has_bottom_div = False  # 底背离
+    has_top_div = False     # 顶背离
+    if signal_row and signal_row.get("信号"):
+        for s in signal_row["信号"]:
+            div = s.get("背离", "无")
+            if "底背离" in str(div):
+                has_bottom_div = True
+            if "顶背离" in str(div):
+                has_top_div = True
+
+    # ── 5. 判断当前涨跌幅在历史分布中的极端程度 ──
+    # 检查各周期当前涨跌幅是否处于历史极端位置（<20%分位或>80%分位）
+    extreme_bullish = 0  # 极端看多信号数（大跌到历史低位）
+    extreme_bearish = 0  # 极端看空信号数（大涨到历史高位）
+    if distribution_result and signal_row and signal_row.get("信号"):
+        for s in signal_row["信号"]:
+            period = s["周期"]
+            ret = s.get("区间涨跌幅%", 0)
+            p_str = period.replace("日", "")
+            dist_pd = distribution_result.get(p_str, {})
+            if dist_pd.get("数据不足", True):
+                continue
+            if ret < 0:
+                # 下跌：对比下跌幅度分布
+                down_s = dist_pd.get("下跌幅度", {})
+                down_mean = down_s.get("平均值", 0)
+                ret_abs = abs(ret)
+                if ret_abs > down_mean * 1.5:  # 跌幅超过均值1.5倍 = 极端
+                    extreme_bullish += 1  # 超跌 = 潜在看多机会
+            elif ret > 0:
+                # 上涨：对比上涨幅度分布
+                up_s = dist_pd.get("上涨幅度", {})
+                up_mean = up_s.get("平均值", 0)
+                if ret > up_mean * 1.5:  # 涨幅超过均值1.5倍 = 极端
+                    extreme_bearish += 1  # 超涨 = 潜在看空风险
+
+    # ── 6. 综合胜率 ──
+    if signal_row and signal_row.get("信号"):
+        win_rates = []
+        for s in signal_row["信号"]:
+            wr = s.get("历史胜率%", "")
+            if isinstance(wr, (int, float)):
+                win_rates.append(wr)
+        combined_win_rate = round(sum(win_rates) / len(win_rates), 1) if win_rates else "-"
+    else:
+        combined_win_rate = '-'
+
+    # ── 7. 最终决策 ──
+    # 构建评分理由
+    score_parts = []
+    score_parts.append(f"波段信号净得分{net_score:+.0f}")
+    if macd_bull:
+        score_parts.append("MACD偏多")
+    elif macd_bear:
+        score_parts.append("MACD偏空")
+    if rsi_oversold:
+        score_parts.append("RSI超卖")
+    elif rsi_overbought:
+        score_parts.append("RSI超买")
+    if has_bottom_div:
+        score_parts.append("底背离")
+    if has_top_div:
+        score_parts.append("顶背离")
+    if extreme_bullish >= 2:
+        score_parts.append(f"{extreme_bullish}个周期超跌")
+    if extreme_bearish >= 2:
+        score_parts.append(f"{extreme_bearish}个周期超涨")
+
+    # 强多条件：净得分>30 + MACD金叉确认 + (RSI不超买或超卖)
+    strong_bull = net_score >= 30 and macd_bull and not rsi_overbought
+    # 中多条件：净得分>0 + (MACD偏多或超卖或底背离或超跌)
+    mild_bull = net_score >= 10 and (macd_bull or rsi_oversold or has_bottom_div or extreme_bullish >= 2)
+    # 弱多条件：净得分>0
+    weak_bull = net_score > 0
+
+    # 强空条件
+    strong_bear = net_score <= -30 and macd_bear and not rsi_oversold
+    # 中空条件
+    mild_bear = net_score <= -10 and (macd_bear or rsi_overbought or has_top_div or extreme_bearish >= 2)
+    # 弱空条件
+    weak_bear = net_score < 0
+
+    # 震荡条件
+    is_neutral = not weak_bull and not weak_bear
+
+    logic = []
+
+    if strong_bull:
+        main_strategy = "**买入/加仓**"
+        confidence = "**高**"
+        logic.append(f"1. 波段信号强烈偏多（净得分{net_score:+.0f}），{zt_count}个周期触发正T，{ft_count}个周期触发反T。")
+        logic.append(f"2. MACD{macd_dir}确认多头趋势。")
+        if rsi_oversold:
+            logic.append("3. RSI处于超卖区域，短期超跌反弹概率大。")
+        if has_bottom_div:
+            logic.append("4. 出现底背离信号，反转可靠性增强。")
+        if extreme_bullish >= 2:
+            logic.append(f"5. {extreme_bullish}个周期跌幅超过历史均值1.5倍，处于极端超跌区域。")
+    elif mild_bull:
+        main_strategy = "**逢低买入/做多T**"
+        confidence = "**中高**"
+        logic.append(f"1. 波段信号偏多（净得分{net_score:+.0f}），{zt_count}个周期触发正T。")
+        if macd_bull:
+            logic.append(f"2. MACD{macd_dir}，中期趋势支持做多。")
+        if rsi_oversold:
+            logic.append("3. RSI超卖，短期有反弹需求。")
+        if has_bottom_div:
+            logic.append("4. 出现底背离，增强买入信号可靠性。")
+        if extreme_bullish >= 2:
+            logic.append(f"5. {extreme_bullish}个周期超跌，历史统计显示此类极端下跌后反弹概率较高。")
+        if not macd_bull and not rsi_oversold:
+            logic.append("3. MACD尚未形成明确金叉/多头，建议分批低吸而非一次性重仓。")
+    elif weak_bull:
+        main_strategy = "**偏多持仓+做T**"
+        confidence = "**中**"
+        logic.append(f"1. 波段信号略偏多（净得分{net_score:+.0f}），正T{zt_count}个/反T{ft_count}个。")
+        if macd_bull:
+            logic.append(f"2. MACD{macd_dir}，中期偏多，持股为主。")
+        else:
+            logic.append("2. MACD方向不明确，不宜重仓。")
+        logic.append("3. 适宜持股同时以做T降低持仓成本。")
+    elif strong_bear:
+        main_strategy = "**卖出/减仓**"
+        confidence = "**高**"
+        logic.append(f"1. 波段信号强烈偏空（净得分{net_score:+.0f}），{ft_count}个周期触发反T。")
+        logic.append(f"2. MACD{macd_dir}确认空头趋势。")
+        if rsi_overbought:
+            logic.append("3. RSI处于超买区域，回调风险较大。")
+        if has_top_div:
+            logic.append("4. 出现顶背离信号，下跌概率增加。")
+        if extreme_bearish >= 2:
+            logic.append(f"5. {extreme_bearish}个周期涨幅超过历史均值1.5倍，处于极端超买区域。")
+    elif mild_bear:
+        main_strategy = "**逢高减仓/做空T**"
+        confidence = "**中高**"
+        logic.append(f"1. 波段信号偏空（净得分{net_score:+.0f}），{ft_count}个周期触发反T。")
+        if macd_bear:
+            logic.append(f"2. MACD{macd_dir}，中期趋势偏空。")
+        if rsi_overbought:
+            logic.append("3. RSI超买，短期回调概率大。")
+        if has_top_div:
+            logic.append("4. 出现顶背离，增强卖出信号可靠性。")
+        if extreme_bearish >= 2:
+            logic.append(f"5. {extreme_bearish}个周期超涨，历史统计显示此类极端上涨后回调概率较高。")
+        if not macd_bear and not rsi_overbought:
+            logic.append("3. MACD尚未形成明确死叉/空头，建议分批减仓而非清仓。")
+    elif weak_bear:
+        main_strategy = "**偏空持仓+做T**"
+        confidence = "**中**"
+        logic.append(f"1. 波段信号略偏空（净得分{net_score:+.0f}），反T{ft_count}个/正T{zt_count}个。")
+        if macd_bear:
+            logic.append(f"2. MACD{macd_dir}，中期偏空，控制仓位。")
+        else:
+            logic.append("2. MACD方向不明确，以做T降本为主。")
+        logic.append("3. 控制仓位，以反T（逢高卖出）操作为主，降低持仓成本。")
+    else:
+        main_strategy = "**持仓观望**"
+        confidence = "**中**"
+        logic.append(f"1. 波段信号无明显方向（净得分{net_score:+.0f}），正T{zt_count}个/反T{ft_count}个。")
+        logic.append("2. 各周期信号缺乏一致性，多空分歧较大，等待方向明确。")
+        if macd_bull:
+            logic.append(f"3. MACD{macd_dir}，中期略偏多，可保留部分仓位。")
+        elif macd_bear:
+            logic.append(f"3. MACD{macd_dir}，中期略偏空，注意控制风险。")
+        else:
+            logic.append("3. 以观望为主，等待信号明确后再操作。")
+
+    # 追加综合胜率
+    if combined_win_rate != '-':
+        logic.append(f"{len(logic)+1}. 历史统计显示，触发信号周期的综合平均胜率约为 **{combined_win_rate}%** 。")
+
+    L("| 决策维度 | 结论 | 置信度 |")
+    L("| --- | --- | --- |")
+    L(f"| **主策略** | {main_strategy} | {confidence} |")
+    L(f"| **逻辑依据** | {' '.join(logic)} | |")
+    L(f"| **波段评分** | 净得分{net_score:+.0f}（{'偏多' if net_score > 0 else '偏空' if net_score < 0 else '中性'}） | MACD:{'偏多' if macd_bull else '偏空' if macd_bear else '中性'} / RSI:{'超卖' if rsi_oversold else '超买' if rsi_overbought else '中性'} / 背离:{'底背离' if has_bottom_div else '顶背离' if has_top_div else '无'} |")
+    L(f"| **周期详情** | {' ｜ '.join(period_details)} | |")
+
+    # 买入区域
+    buy_zone = []
+    if isinstance(rsi_val, (int, float)) and rsi_val < 30:
+        buy_zone.append("RSI已进入超卖区域，可在**集合竞价**或**开盘价附近**直接建仓。")
+    elif isinstance(rsi_val, (int, float)) and rsi_val < 40:
+        buy_zone.append("RSI接近超卖但未确认反转，建议在**集合竞价**或**开盘后下跌1%-2%** 的区间内分批建仓，避免追高。")
+    else:
+        buy_zone.append("RSI处于中性区域，建议等待回调至支撑位附近建仓。")
+    L(f"| **买入区域** | {' '.join(buy_zone)} | |")
+
+    # 止损设定
+    vod_kr = vod.get("关键价位", {})
+    stop_loss = []
+    recent_low = vod_kr.get("60日最低", "?")
+    if recent_low != "?" and isinstance(price, (int, float)):
+        stop_pct = round((recent_low - price) / price * 100, 1) if price > 0 else 0
+        stop_loss.append(f"建议以**最近60日低点（约{recent_low}元，{stop_pct:+.1f}%）** ")
+    else:
+        stop_loss.append("建议以**最近10日低点** ")
+    stop_loss.append("或 **-5%** 作为硬止损。")
+    L(f"| **止损设定** | {''.join(stop_loss)} | |")
+
+    # 仓位建议
+    position = valuation.get("verdict", "?")
+    L(f"| **仓位建议** | 作为波段交易，建议仓位**不超过总仓位的15%-20%**。估值建议：{position} | |")
+
+    # 日内T机会
+    intraday_tt = []
+    if best_zt_idx >= 0:
+        zt_price = round(price * (1 - zt_th / 100), 2) if isinstance(price, (int, float)) else "?"
+        intraday_tt.append(f"若大跌（>-{zt_th:.1f}%即低于{zt_price}元），可额外分配资金做日内正T。")
+    if best_ft_idx >= 0:
+        ft_price = round(price * (1 + ft_th / 100), 2) if isinstance(price, (int, float)) else "?"
+        intraday_tt.append(f"若大涨（>+{ft_th:.1f}%即高于{ft_price}元），可做日内反T。")
+    if not intraday_tt:
+        intraday_tt.append("关注开盘价，根据实时波动决定日内T操作。")
+    L(f"| **日内T机会** | {' '.join(intraday_tt)} | |")
+
+    return "\n".join(lines)
+
+
+def md_to_image(md_content: str, output_path: str, width: int = 900) -> bool:
+    """
+    Markdown 内容转图片
+    流程：markdown→HTML + CSS → playwright(system chrome) 截图
+
+    Args:
+        md_content: Markdown 文本内容
+        output_path: 输出图片路径
+        width: 图片宽度（像素）
+
+    Returns:
+        是否成功
+    """
+    import markdown as md_lib
+    import os
+
+    try:
+        # 1. Markdown → HTML（使用标准 markdown 库 + extra 扩展）
+        body_html = md_lib.markdown(md_content, extensions=['extra', 'codehilite'])
+
+        # 2. 包装 HTML 页面（漂亮样式）
+        html_template = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #1a1a2e;
+    background: #ffffff;
+    padding: 30px 40px;
+    width: {width}px;
+  }}
+  h1, h2, h3, h4 {{ color: #1a1a2e; margin-top: 1.2em; margin-bottom: 0.6em; }}
+  h3 {{ font-size: 18px; border-left: 4px solid #e94560; padding-left: 12px; }}
+  h4 {{ font-size: 15px; color: #16213e; }}
+  p {{ margin: 0.5em 0; }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 13px;
+  }}
+  th {{
+    background: #1a1a2e;
+    color: #ffffff;
+    padding: 8px 10px;
+    text-align: left;
+    font-weight: 600;
+  }}
+  td {{
+    padding: 7px 10px;
+    border-bottom: 1px solid #e8e8e8;
+  }}
+  tr:nth-child(even) td {{ background: #f8f9fa; }}
+  tr:hover td {{ background: #eef2ff; }}
+  strong {{ color: #e94560; }}
+  hr {{ border: none; border-top: 2px solid #1a1a2e; margin: 1.5em 0; }}
+  blockquote {{
+    border-left: 4px solid #e94560;
+    background: #fff5f5;
+    padding: 10px 15px;
+    margin: 0.8em 0;
+    color: #555;
+    font-size: 13px;
+  }}
+  code {{ background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; }}
+  ul, ol {{ padding-left: 20px; margin: 0.4em 0; }}
+  li {{ margin: 0.3em 0; }}
+  .header {{ text-align: center; margin-bottom: 20px; }}
+  .footer {{ text-align: center; margin-top: 20px; font-size: 12px; color: #999; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <h2>股票交易决策支持报告</h2>
+  <hr>
+</div>
+{body_html}
+<div class="footer">
+  <hr>
+  <p>本报告由 stock_crawler 自动生成 | 仅供参考，不构成投资建议</p>
+</div>
+</body>
+</html>'''
+
+        # 3. playwright 使用系统 Chrome 渲染截图
+        from playwright.sync_api import sync_playwright
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, channel='chrome')
+            page = browser.new_page(viewport={"width": width, "height": 1})
+            page.set_content(html_template, wait_until="networkidle")
+            page.wait_for_timeout(500)
+            page_height = page.evaluate("document.body.scrollHeight")
+            page.set_viewport_size({"width": width, "height": page_height})
+            page.wait_for_timeout(200)
+            page.screenshot(path=output_path, full_page=True)
+            browser.close()
+
+        return True
+    except Exception as e:
+        print(f"  [警告] 图片生成失败: {e}")
+        return False
