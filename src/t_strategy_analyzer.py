@@ -1978,7 +1978,7 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         '',
         '【策略说明】',
         '  统计 5/10/20/30/90 日周期内股价的上涨/下跌幅度分布。',
-        '  以 5% 为一个阶梯，统计各区间出现的次数（加权次数按时间衰减）。',
+        '  以 2% 为一个阶梯，统计各区间出现的次数（加权次数按时间衰减）。',
         '',
         '【分析时间范围】',
         f'  {data_time_range}' if data_time_range else '',
@@ -1990,15 +1990,19 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         '  中位数: 样本按大小排序后的中间值',
         '',
         '【分布解读】',
-        '  分布表显示了涨跌幅在5%区间内的分布次数。',
+        '  分布表显示了涨跌幅在2%区间内的分布次数和累积百分位。',
         '  上涨幅度侧（正收益）和下跌幅度侧（负收益绝对值）分别统计。',
         '  加权次数 = 每个样本权重（位置索引+1）之和，越新的数据权重越大。',
+        '  百分位 = 当前区间上限以内所有样本的累积占比（从小到大）。',
         '',
         '【用法参考】',
         '  - 观察哪个区间的密度最高，判断最常见的波段幅度',
         '  - 比较加权平均与简单平均，判断近期趋势是否偏离历史均值',
         '  - 最大值可辅助设置止盈止损参考线',
         '  - 中位数反映典型的波段幅度（不受极端值影响）',
+        '  - 百分位可以判断当前涨跌幅处于历史的什么位置：',
+        '    比如90日涨20%处于85%分位，说明仅15%的历史样本涨幅更大',
+        '    百分位越高说明越极端，反转概率越大',
     ]
     sheets_xml.append(_build_text_sheet(guide_lines, col_width=90))
     sheet_names.append('分布分析说明')
@@ -2030,28 +2034,48 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         # Distribution details
         up_dist = up.get('分布', {})
         down_dist = down.get('分布', {})
+        up_total = up.get('样本数', 0) or 1
+        down_total = down.get('样本数', 0) or 1
 
+        # 按区间上限升序排序，用于计算累积百分位
         up_labels_sorted = sorted(up_dist.keys(), key=lambda x: float(x.split('~')[0]))
-        down_labels_sorted = sorted(down_dist.keys(), key=lambda x: -float(x.split('~')[1].replace('-', '')))
+        down_labels_asc = sorted(down_dist.keys(), key=lambda x: float(x.split('~')[0]))
 
-        dist_headers = ['上涨区间', '上涨次数', '上涨加权次数',
-                        '下跌区间', '下跌次数', '下跌加权次数']
-        dist_widths = [14, 10, 14, 14, 10, 14]
+        # 计算每个区间的累积百分位（上涨：从小到大累加）
+        up_cumul = {}  # label -> 累积百分位%
+        cumul_count = 0
+        for lab in up_labels_sorted:
+            cumul_count += up_dist[lab]['次数']
+            up_cumul[lab] = round(cumul_count / up_total * 100, 1)
+
+        # 计算每个区间的累积百分位（下跌：从小到大累加）
+        down_cumul = {}  # label -> 累积百分位%
+        cumul_count = 0
+        for lab in down_labels_asc:
+            cumul_count += down_dist[lab]['次数']
+            down_cumul[lab] = round(cumul_count / down_total * 100, 1)
+
+        # 下跌侧按从大到小显示（与之前一致）
+        down_labels_display = sorted(down_dist.keys(), key=lambda x: -float(x.split('~')[1].replace('-', '')))
+
+        dist_headers = ['上涨区间', '上涨次数', '上涨加权次数', '上涨百分位%',
+                        '下跌区间', '下跌次数', '下跌加权次数', '下跌百分位%']
+        dist_widths = [14, 10, 14, 12, 14, 10, 14, 12]
         dist_rows = []
 
-        max_len = max(len(up_labels_sorted), len(down_labels_sorted))
+        max_len = max(len(up_labels_sorted), len(down_labels_display))
         for i in range(max_len):
             row = []
             if i < len(up_labels_sorted):
                 lab = up_labels_sorted[i]
-                row.extend([lab, up_dist[lab]['次数'], up_dist[lab]['加权次数']])
+                row.extend([lab, up_dist[lab]['次数'], up_dist[lab]['加权次数'], up_cumul[lab]])
             else:
-                row.extend(['', '', ''])
-            if i < len(down_labels_sorted):
-                lab = down_labels_sorted[i]
-                row.extend([lab, down_dist[lab]['次数'], down_dist[lab]['加权次数']])
+                row.extend(['', '', '', ''])
+            if i < len(down_labels_display):
+                lab = down_labels_display[i]
+                row.extend([lab, down_dist[lab]['次数'], down_dist[lab]['加权次数'], down_cumul[lab]])
             else:
-                row.extend(['', '', ''])
+                row.extend(['', '', '', ''])
             dist_rows.append(row)
 
         sheets_xml.append(_build_sheet_xml('波段' + period_str + '日详情', dist_headers, dist_rows, dist_widths))

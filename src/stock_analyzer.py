@@ -1160,13 +1160,53 @@ def generate_buy_sell_report_md(
         # 从 distribution_result 获取分布数据
         dist_pd = (distribution_result or {}).get(p_str, {})
         if dist_pd.get("数据不足", True):
-            # 备用：简单提及
             direction = "上涨" if latest_ret > 0 else "下跌"
             L(f"| **{p_str}日** | {latest_ret:+.2f}% | 数据不足 | - | - | 数据不足以计算历史分位 |")
             continue
 
         up_s = dist_pd.get("上涨幅度", {})
         down_s = dist_pd.get("下跌幅度", {})
+        up_dist = up_s.get("分布", {})
+        down_dist = down_s.get("分布", {})
+        up_total = up_s.get("样本数", 0) or 1
+        down_total = down_s.get("样本数", 0) or 1
+
+        def _calc_exact_percentile_up(ret, dist, total):
+            """计算上涨百分位（按区间上限升序累加，与Excel一致）"""
+            labels = sorted(dist.keys(), key=lambda x: float(x.split("~")[0]))
+            cumul = 0
+            for lab in labels:
+                lo = float(lab.split("~")[0])
+                hi = float(lab.split("~")[1])
+                cumul += dist[lab]['次数']
+                if lo <= ret < hi or (ret == 0 and lo == 0):
+                    return round(cumul / total * 100, 1), lab
+            # 如果大于所有区间上限
+            return round(cumul / total * 100, 1), labels[-1] if labels else ""
+
+        def _calc_exact_percentile_down(ret_abs, dist, total):
+            """计算下跌百分位（按绝对值升序累加，与Excel一致）
+               dist的key格式为 "-高~-低" 如 "-10~-5" 表示 -10%~-5%
+            """
+            # 按绝对值升序排序：-5~0 (abs 0-5), -10~-5 (abs 5-10), ...
+            labels = sorted(dist.keys(), key=lambda x: -float(x.split("~")[1]))
+            cumul = 0
+            for lab in labels:
+                lo = float(lab.split("~")[0])  # 更负的值
+                hi = float(lab.split("~")[1])  # 更接近0的值
+                abs_lo = abs(lo)  # 绝对值下限
+                abs_hi = abs(hi)  # 绝对值上限
+                cumul += dist[lab]['次数']
+                # 检查ret_abs是否落在当前区间（绝对值角度）
+                # 区间范围从 abs_hi~abs_lo（因为hi更接近0）
+                # 例如 "-10~-5": hi=-5, lo=-10, abs范围 5~10
+                if (abs_hi <= ret_abs < abs_lo) or (ret_abs == 0 and abs_hi == 0):
+                    return round(cumul / total * 100, 1), lab
+                # 特殊情况：ret_abs正好等于区间的边界
+                if abs(ret_abs - abs_lo) < 0.001:
+                    return round(cumul / total * 100, 1), lab
+            # 大于所有区间
+            return round(cumul / total * 100, 1), labels[-1] if labels else ""
 
         up_mean = up_s.get("平均值", 0)
         up_median = up_s.get("中位数", 0)
@@ -1174,59 +1214,37 @@ def generate_buy_sell_report_md(
         down_median = down_s.get("中位数", 0)
 
         if latest_ret >= 0:
-            # 上涨：对比上涨分布
             mean_val = up_mean
             median_val = up_median
-            # 估算分位：在上涨样本中的位置
-            up_dist = up_s.get("分布", {})
-            sorted_ranges = sorted(up_dist.keys(), key=lambda x: float(x.split("~")[0]))
-            # 找到所在区间索引
-            found_range = None
-            for rk in sorted_ranges:
-                parts = rk.split("~")
-                lo = float(parts[0])
-                hi = float(parts[1]) if len(parts) > 1 else 999
-                if lo <= latest_ret < hi:
-                    found_range = rk
-                    break
-            # 累计所有低于当前涨跌幅的加权次数
-            total_up_w = sum(v.get("加权次数", 0) for v in up_dist.values())
-            below_w = sum(v.get("加权次数", 0) for rk, v in up_dist.items()
-                          if float(rk.split("~")[0]) < latest_ret)
-            est_pct = round(below_w / total_up_w * 100, 1) if total_up_w > 0 else 50
-            if est_pct < 20:
-                pct_desc = f"**约0% - 20%**"
-                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，远低于历史均值{mean_val:.2f}%，处于历史极低分位，表明近{p_str}日涨幅远低于历史常态。"
-            elif est_pct < 40:
-                pct_desc = f"**约20% - 40%**"
-                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，低于历史均值{mean_val:.2f}%，处于历史较低分位。"
-            elif est_pct < 60:
-                pct_desc = f"**约40% - 60%**"
-                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，接近历史中位数{median_val:.2f}%，处于历史中位区间。"
-            elif est_pct < 80:
-                pct_desc = f"**约60% - 80%**"
-                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，高于历史均值{mean_val:.2f}%，处于历史较高分位。"
+            ex_pct, found_lab = _calc_exact_percentile_up(latest_ret, up_dist, up_total)
+            pct_desc = f"**{ex_pct}%**"
+            # 解读
+            if ex_pct <= 20:
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，仅{ex_pct}%的历史上涨幅度小于此值，处于历史极低分位，表明近{p_str}日涨幅远低于历史常态。"
+            elif ex_pct <= 40:
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，{ex_pct}%的历史上涨幅度小于此值，低于历史均值{mean_val:.2f}%，处于历史较低分位。"
+            elif ex_pct <= 60:
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，{ex_pct}%的历史上涨幅度小于此值，接近历史中位数{median_val:.2f}%，处于历史中位区间。"
+            elif ex_pct <= 80:
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，{ex_pct}%的历史上涨幅度小于此值，高于历史均值{mean_val:.2f}%，处于历史较高分位。"
             else:
-                pct_desc = f"**约80% - 100%**"
-                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，远高于历史均值{mean_val:.2f}%，处于历史极高位置。"
+                note = f"近{p_str}日涨幅{latest_ret:+.2f}%，{ex_pct}%的历史上涨幅度小于此值，远高于历史均值{mean_val:.2f}%，处于历史极高位置，仅{100-ex_pct:.1f}%的时间涨得更多。"
             L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (涨幅) | {median_val:.2f}% (涨幅) | {note} |")
         else:
             ret_abs = abs(latest_ret)
-            # 下跌：对比下跌分布（绝对值）
             mean_val = down_mean
             median_val = down_median
-            down_dist = down_s.get("分布", {})
-            total_down_w = sum(v.get("加权次数", 0) for v in down_dist.values())
-            below_w = sum(v.get("加权次数", 0) for rk, v in down_dist.items()
-                          if float(rk.split("~")[0]) < ret_abs)
-            est_pct = round(below_w / total_down_w * 100, 1) if total_down_w > 0 else 50
-            pct_desc = f"**约{max(0, 100-est_pct-10):.0f}% - {min(100, 100-est_pct+10):.0f}%**"
-            if ret_abs > mean_val:
-                note = f"近{p_str}日下跌{ret_abs:.2f}%超过历史均值{mean_val:.2f}%，处于历史较低分位，回调较深。"
-            elif ret_abs > median_val:
-                note = f"近{p_str}日下跌{ret_abs:.2f}%超过历史中位数{median_val:.2f}%，处于历史中等偏低分位。"
+            ex_pct, found_lab = _calc_exact_percentile_down(ret_abs, down_dist, down_total)
+            pct_desc = f"**{ex_pct}%**"
+            # 解读：百分位 = 跌幅至少达到当前值的样本占比
+            if ex_pct <= 10:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%，仅{ex_pct}%的历史下跌幅度超过此值，属于极端超跌，回调极深，反弹概率大。"
+            elif ex_pct <= 30:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%，{ex_pct}%的历史下跌幅度超过此值，超过历史均值{mean_val:.2f}%，回调较深。"
+            elif ex_pct <= 60:
+                note = f"近{p_str}日下跌{ret_abs:.2f}%，{ex_pct}%的历史下跌幅度超过此值，接近历史中位数{median_val:.2f}%，处于中等回调水平。"
             else:
-                note = f"近{p_str}日下跌{ret_abs:.2f}%小于历史中位数{median_val:.2f}%，回调幅度较小。"
+                note = f"近{p_str}日下跌{ret_abs:.2f}%，{ex_pct}%的历史下跌幅度超过此值，小于历史中位数{median_val:.2f}%，回调幅度较小。"
             L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (跌幅) | {median_val:.2f}% (跌幅) | {note} |")
 
     L()
