@@ -480,7 +480,8 @@ def main():
                 if pd.get('数据不足', True):
                     continue
                 print(f"  [{p_str}日] 样本:{pd['样本数']}  "
-                      f"范围:{pd['range']}%")
+                      f"范围:{pd['range']}%  "
+                      f"时间:{pd.get('时间范围', '?')}")
                 for side, label in [('上涨幅度', '上涨'), ('下跌幅度', '下跌')]:
                     sd = pd.get(side, {})
                     print(f"    {label}: 最大={sd['最大值']}% "
@@ -500,11 +501,19 @@ def main():
                 t_analysis_dir,
                 config.get("output_file", "report").replace(".xlsx", "_波段涨跌幅分布.xlsx"),
             )
+            # 获取数据时间范围（data 按日期降序，最新在前）
+            data_dates = [r.get('日期', '') for r in data if r.get('日期')]
+            if data_dates:
+                data_time_range = f"{data_dates[0]} ~ {data_dates[-1]}"
+            else:
+                data_time_range = "未知"
+
             generate_amplitude_distribution_excel(
                 dist_result,
                 config.get("stock_name", ""),
                 config["stock_code"],
                 dist_output,
+                data_time_range=data_time_range,
             )
             print(f"  [分布] 已保存: {os.path.abspath(dist_output)}")
         except Exception as e_dist:

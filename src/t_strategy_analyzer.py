@@ -1904,6 +1904,7 @@ def analyze_swing_amplitude_distribution(data, periods=None, bin_width=5.0):
             '数据不足': False,
             '样本数': total,
             'range': f'{round(min(returns), 2)} ~ {round(max(returns), 2)}',
+            '时间范围': f"{data_asc[period].get('日期', '?')} ~ {data_asc[-1].get('日期', '?')}",
             '上涨幅度': {
                 '样本数': len(up_returns),
                 '分布': up_dist,
@@ -1921,10 +1922,15 @@ def analyze_swing_amplitude_distribution(data, periods=None, bin_width=5.0):
                 '中位数': down_stats['中位数'],
             },
         }
+    # ── 整体数据时间范围 ──
+    if data_asc:
+        result['_meta'] = {
+            '时间范围': f"{data_asc[0].get('日期', '?')} ~ {data_asc[-1].get('日期', '?')}"
+        }
     return result
 
 
-def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, output_path):
+def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, output_path, data_time_range=None):
     """
     生成波段涨跌幅历史分布分析 Excel
     """
@@ -1974,6 +1980,9 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         '  统计 5/10/20/30/90 日周期内股价的上涨/下跌幅度分布。',
         '  以 5% 为一个阶梯，统计各区间出现的次数（加权次数按时间衰减）。',
         '',
+        '【分析时间范围】',
+        f'  {data_time_range}' if data_time_range else '',
+        '',
         '【统计指标】',
         '  最大值: 该周期内最大的涨跌幅绝对值',
         '  平均值: 所有样本的简单算术平均',
@@ -2002,11 +2011,13 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
 
         up = pd.get('上涨幅度', {})
         down = pd.get('下跌幅度', {})
+        period_time_range = pd.get('时间范围', '')
 
         # Stats block
         stats_headers = ['指标', '上涨幅度', '下跌幅度(绝对值)']
-        stats_widths = [12, 14, 18]
+        stats_widths = [16, 14, 18]
         stats_rows = [
+            ['时间范围', period_time_range, ''],
             ['样本数', up.get('样本数', 0), down.get('样本数', 0)],
             ['最大值(%)', up.get('最大值', 0), down.get('最大值', 0)],
             ['平均值(%)', up.get('平均值', 0), down.get('平均值', 0)],
