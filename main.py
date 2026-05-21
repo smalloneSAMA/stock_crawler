@@ -26,7 +26,7 @@ import sys
 from datetime import datetime
 
 # 将当前目录加入模块搜索路径，方便导入同级 .py 文件
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from config_manager import ConfigError, load_config, load_config_full, print_config_list
 from data_fetcher import DataFetchError, fetch_stock_data

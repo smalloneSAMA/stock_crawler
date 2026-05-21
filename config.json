@@ -1,11 +1,6 @@
 {
     "stocks": ["神火股份"],
-    "start_date": "2025-09-20",
-    "end_date": "2026-05-20",
-    "analysis": {
-        "grid_levels": 4,
-        "atr_multiplier": 0.5,
-        "t_single_qty": 500
-    },
-    "t_analysis_date": "2025-09-20~2026-05-20"
+    "start_date": "2020-01-01",
+    "end_date": "2026-05-19",
+    "t_analysis_date": "2026-05-19"
 }
