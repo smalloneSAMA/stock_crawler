@@ -106,11 +106,14 @@ def main():
     report_dir = os.path.join(base_dir, "output")   # 分析报告存放目录
     t_analysis_dir = os.path.join(base_dir, "t_analysis")  # T策略分析报告存放目录
     photo_dir = os.path.join(base_dir, "photo")     # 报告图片存放目录
-    os.makedirs(data_dir, exist_ok=True)
+    # 清空旧数据目录（保留缓存）
+    import shutil
+    for d in [photo_dir, t_analysis_dir, report_dir, data_dir]:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+        os.makedirs(d, exist_ok=True)
+    # 缓存目录不清空，保留历史数据
     os.makedirs(cache_dir, exist_ok=True)
-    os.makedirs(report_dir, exist_ok=True)
-    os.makedirs(t_analysis_dir, exist_ok=True)
-    os.makedirs(photo_dir, exist_ok=True)
 
     # ── 2. 逐只股票抓取 + 分析 ──
     total_ok = 0    # 成功处理的股票数
