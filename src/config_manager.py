@@ -126,6 +126,11 @@ def load_config_full(config_path: str):
     if not os.path.exists(config_path):
         raise ConfigError(f"配置文件不存在: {config_path}")
 
+    # ── 检测文件类型：.xlsx 走 Excel 读取，否则走 JSON ──
+    ext = os.path.splitext(config_path)[1].lower()
+    if ext == ".xlsx":
+        return _load_config_from_excel(config_path)
+
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -225,6 +230,122 @@ def load_config_full(config_path: str):
     # 向下兼容：仍支持旧的 t_analysis_date 字段
     if "_t_dates" not in global_config and "t_analysis_date" in raw:
         global_config["_t_dates"] = parse_analysis_dates(raw["t_analysis_date"])
+
+    return validated, global_config
+
+
+def _load_config_from_excel(excel_path: str):
+    """
+    从 my_stocks.xlsx 加载配置
+
+    Excel 列说明：
+      stocks       - 股票名称（必填）
+      start_date   - 数据起始日期
+      end_date     - 数据截止日期
+      t_start_date - 波段T分析起始日期
+      t_end_date   - 波段T分析截止日期
+      enable       - 是否分析该股票（1=分析，0=跳过，默认分析）
+
+    每行一只股票，各股票可独立设置日期范围。
+    """
+    import openpyxl
+    from datetime import datetime
+
+    wb = openpyxl.load_workbook(excel_path)
+    ws = wb.active
+
+    # 读取表头
+    headers = [cell.value for cell in ws[1]]
+    if not headers or headers[0] != "stocks":
+        raise ConfigError("Excel 第一列必须是 'stocks'（股票名称）")
+
+    # 构建列名→列号映射
+    col_map = {}
+    for i, h in enumerate(headers):
+        if h:
+            col_map[str(h).strip()] = i
+
+    def _cell_str(row, col_idx):
+        """取单元格内容并转为字符串"""
+        val = row[col_idx] if col_idx < len(row) else None
+        if val is None:
+            return ""
+        if isinstance(val, datetime):
+            return val.strftime("%Y-%m-%d")
+        return str(val).strip()
+
+    validated = []
+    global_config = {}
+    t_start_vals = []
+    t_end_vals = []
+
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        stock_name = _cell_str(row, col_map.get("stocks", 0))
+        if not stock_name:
+            continue  # 跳过空行
+
+        # ── 检查是否启用 ──
+        enable_col = col_map.get("enable", 5)
+        enable_val = row[enable_col] if enable_col < len(row) else None
+        if enable_val is not None and str(enable_val).strip() == "0":
+            print(f"  [跳过] {stock_name} 未启用（enable=0），跳过")
+            continue
+
+        start_date = _cell_str(row, col_map.get("start_date", 1))
+        end_date = _cell_str(row, col_map.get("end_date", 2))
+
+        # ── 自动查询股票代码 ──
+        stock_code = ""
+        print(f"  [自动查询] 正在查询「{stock_name}」的股票代码...")
+        stock_code = lookup_stock_code(stock_name)
+        if not stock_code:
+            print(f"  [警告] 未能自动查询到「{stock_name}」的代码，跳过该股票")
+            continue
+        print(f"    -> 查到代码: {stock_code}")
+
+        # 收集 T 分析日期（取所有行的最小/最大）
+        ts = _cell_str(row, col_map.get("t_start_date", 3))
+        te = _cell_str(row, col_map.get("t_end_date", 4))
+        if ts:
+            t_start_vals.append(ts)
+        if te:
+            t_end_vals.append(te)
+
+        # ── 自动生成输出文件名 ──
+        name_part = stock_name if stock_name else stock_code.replace(".SZ", "").replace(".SH", "")
+        output_file = f"{name_part}_{stock_code}抓取数据.xlsx"
+
+        validated.append({
+            "stock_name": stock_name,
+            "stock_code": stock_code,
+            "start_date": start_date,
+            "end_date": end_date,
+            "output_file": output_file,
+            "analysis": None,
+        })
+
+    if not validated:
+        raise ConfigError("Excel 中未找到有效的股票数据")
+
+    # 从所有行中取 t_start_date 的最小值和 t_end_date 的最大值
+    if t_start_vals and t_end_vals:
+        t_start = min(t_start_vals)
+        t_end = max(t_end_vals)
+        global_config["t_start_date"] = t_start
+        global_config["t_end_date"] = t_end
+        # 生成日期列表
+        from datetime import datetime, timedelta
+        try:
+            sd = datetime.strptime(t_start, "%Y-%m-%d")
+            ed = datetime.strptime(t_end, "%Y-%m-%d")
+            dates = []
+            cur = sd
+            while cur <= ed:
+                dates.append(cur.strftime("%Y-%m-%d"))
+                cur += timedelta(days=1)
+            global_config["_t_dates"] = dates
+        except ValueError:
+            pass
 
     return validated, global_config
 

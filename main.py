@@ -68,8 +68,8 @@ def main():
     )
     parser.add_argument(
         "-c", "--config",
-        default="config.json",
-        help="配置文件路径（默认: config.json）",
+        default="my_stocks.xlsx",
+        help="配置文件路径（默认: my_stocks.xlsx，支持 .json 和 .xlsx）",
     )
     parser.add_argument(
         "-o", "--output-dir",
