@@ -1,9 +1,9 @@
 # Python 依赖
 # 安装方式: pip install -r requirements.txt
 
-httpx          # HTTP 客户端，用于调用新浪财经和东方财富 API
-markdown       # Markdown 转 HTML，用于生成买卖建议报告
-playwright     # 浏览器自动化，用于 Markdown 报告截图转 PNG
+httpx>=0.28          # HTTP 客户端，用于调用新浪财经和东方财富 API
+markdown>=3.10       # Markdown 转 HTML，用于生成买卖建议报告
+playwright>=1.59     # 浏览器自动化，用于 Markdown 报告截图转 PNG（使用系统 Chrome）
 
-# 安装 playwright 后需下载 Chromium 浏览器：
-#   python -m playwright install chromium
+# ⚠️ 注意：playwright 使用系统已安装的 Chrome 浏览器（channel='chrome'）
+# 系统需预装 Google Chrome，无需额外执行 playwright install

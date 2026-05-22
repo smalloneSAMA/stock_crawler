@@ -545,6 +545,8 @@ def main():
                 swing_result=swing_result,
                 swing_signals=[latest_signal] if latest_signal else None,
                 distribution_result=dist_result,
+                start_date=config.get("start_date", ""),
+                end_date=config.get("end_date", ""),
             )
 
             # 保存为 .md 文件

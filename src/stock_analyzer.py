@@ -983,6 +983,8 @@ def generate_buy_sell_report_md(
     swing_result: Optional[Dict] = None,
     swing_signals: Optional[List[Dict]] = None,
     distribution_result: Optional[Dict] = None,
+    start_date: str = "",
+    end_date: str = "",
 ) -> str:
     """
     生成 Markdown 格式的买卖建议报告
@@ -1007,6 +1009,18 @@ def generate_buy_sell_report_md(
     latest_date = latest.get("日期", "")
     total_days = len(data)
 
+    # 确定数据时间范围
+    data_dates = [r.get("日期", "") for r in data if r.get("日期")]
+    if data_dates:
+        data_start = data_dates[-1]  # data 按日期降序，最新在前
+        data_end = data_dates[0]
+    else:
+        data_start = start_date or "?"
+        data_end = end_date or "?"
+    # 如果传入了 config 的起止日期且比数据范围更广，优先显示 config 的
+    display_start = start_date if start_date and start_date < data_start else data_start
+    display_end = end_date if end_date and end_date > data_end else data_end
+
     lines = []
     def L(s=""): lines.append(s)
 
@@ -1017,6 +1031,7 @@ def generate_buy_sell_report_md(
     L(f"### **{stock_name}([{stock_code}](https://{code_clean}.sz/)) - 次日交易决策支持报告**")
     L()
     L(f"**报告日期：** {now_str}")
+    L(f"**分析数据范围：** {display_start} ~ {display_end}（共{total_days}个交易日）")
     L(f"**分析数据截止：** {latest_date}")
     L(f"**目标交易日期：** {latest_date}次日")
     L()
@@ -1818,7 +1833,7 @@ def md_to_image(md_content: str, output_path: str, width: int = 900) -> bool:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(channel='chrome', headless=True)
             page = browser.new_page(viewport={"width": width, "height": 1})
             page.set_content(html_template, wait_until="networkidle")
             page.wait_for_timeout(500)
