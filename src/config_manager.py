@@ -120,7 +120,8 @@ def load_config_full(config_path: str):
     加载完整配置，返回 (股票配置列表, 全局配置字典)
 
     全局配置字段（可选）：
-      - t_analysis_date: 做T分析日期 (如 "2026-05-19")
+      - t_start_date / t_end_date: 波段T分析起止日期 (如 "2026-01-01" / "2026-05-21")
+      - t_analysis_date: （已废弃，仅向下兼容）做T分析日期或范围
     """
     if not os.path.exists(config_path):
         raise ConfigError(f"配置文件不存在: {config_path}")
@@ -201,11 +202,29 @@ def load_config_full(config_path: str):
 
     # 提取全局配置
     global_config = {}
-    for key in ["t_analysis_date"]:
-        if key in raw:
-            global_config[key] = raw[key]
-            # 解析为日期列表
-            global_config["_t_dates"] = parse_analysis_dates(raw[key])
+    # 支持 t_start_date / t_end_date 单独配置（替代旧的 t_analysis_date 范围写法）
+    ts = raw.get("t_start_date", "")
+    te = raw.get("t_end_date", "")
+    if ts and te:
+        from datetime import datetime, timedelta
+        try:
+            sd = datetime.strptime(ts.strip(), "%Y-%m-%d")
+            ed = datetime.strptime(te.strip(), "%Y-%m-%d")
+            if sd > ed:
+                sd, ed = ed, sd
+            dates = []
+            cur = sd
+            while cur <= ed:
+                dates.append(cur.strftime("%Y-%m-%d"))
+                cur += timedelta(days=1)
+            global_config["t_start_date"] = ts.strip()
+            global_config["t_end_date"] = te.strip()
+            global_config["_t_dates"] = dates
+        except ValueError:
+            pass
+    # 向下兼容：仍支持旧的 t_analysis_date 字段
+    if "_t_dates" not in global_config and "t_analysis_date" in raw:
+        global_config["_t_dates"] = parse_analysis_dates(raw["t_analysis_date"])
 
     return validated, global_config
 
