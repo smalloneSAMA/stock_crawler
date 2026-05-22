@@ -1,2 +1,9 @@
-# 本程序使用 Python 内置模块 + httpx（环境中已安装）
-# 无需额外安装任何第三方库
+# Python 依赖
+# 安装方式: pip install -r requirements.txt
+
+httpx          # HTTP 客户端，用于调用新浪财经和东方财富 API
+markdown       # Markdown 转 HTML，用于生成买卖建议报告
+playwright     # 浏览器自动化，用于 Markdown 报告截图转 PNG
+
+# 安装 playwright 后需下载 Chromium 浏览器：
+#   python -m playwright install chromium

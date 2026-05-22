@@ -15,6 +15,7 @@
 | **日内做T分析** | 0.5%~10%梯度统计正T/反T胜率、平均收益 | `t_analysis/*_T策略分析.xlsx` |
 | **波段做T分析** | 5/10/20/30日周期回测，含MACD/RSI/**量能/背离**分组胜率 | `t_analysis/*_T策略分析.xlsx` |
 | **波段T信号** | 单日/日期范围/日期列表判断是否适合做T，合并Excel含收盘价、综合胜率 | `t_analysis/*_波段T信号_*.xlsx` |
+| **买卖建议报告** | 自动生成完整买卖建议报告（Markdown + PNG截图），含估值分位、波段信号、日内T策略、综合建议 | `output/*买卖建议报告.md` + `photo/*.png` |
 
 ## 📁 文件结构
 
@@ -22,20 +23,22 @@
 stock_crawler/
 ├── main.py                   # 主入口
 ├── config.json               # 配置文件
-├── config_manager.py         # 配置读取与验证
-├── data_fetcher.py           # 新浪API数据抓取 + 字段计算
-├── financial_fetcher.py      # 东方财富财务数据填充
-├── excel_generator.py        # Excel文件生成（原生XML，无第三方依赖）
-├── stock_analyzer.py         # 趋势/估值/波动 分析引擎
-├── t_strategy_analyzer.py    # T策略分析引擎（日内+波段+信号）
-├── cache_manager.py          # 本地缓存管理
+├── src/
+│   ├── config_manager.py     # 配置读取与验证
+│   ├── data_fetcher.py       # 新浪API数据抓取 + 字段计算
+│   ├── financial_fetcher.py  # 东方财富财务数据填充
+│   ├── excel_generator.py    # Excel文件生成（原生XML，无第三方依赖）
+│   ├── stock_analyzer.py     # 趋势/估值/波动 分析引擎 + 买卖建议报告生成
+│   ├── t_strategy_analyzer.py# T策略分析引擎（日内+波段+信号）
+│   └── cache_manager.py      # 本地缓存管理
 ├── requirements.txt          # Python依赖
 ├── README.md                 # 本文件
 │
 ├── data/                     # 日K线Excel数据文件
 ├── cache/                    # 本地缓存文件 (.cache.json)
-├── output/                   # 文本分析报告
-└── t_analysis/               # T策略分析Excel文件
+├── output/                   # 文本分析报告 + 买卖建议报告.md
+├── t_analysis/               # T策略分析Excel文件
+└── photo/                    # 买卖建议报告PNG截图
 ```
 
 ## 🚀 快速开始
@@ -47,29 +50,26 @@ cd stock_crawler
 pip install -r requirements.txt
 ```
 
+> 如需生成买卖建议报告的 PNG 截图，还需下载 Playwright 的 Chromium 浏览器：
+> ```bash
+> python -m playwright install chromium
+> ```
+> 若不需要截图功能（只生成 .md 文件），可跳过此步骤。
+
 ### 2️⃣ 修改配置
 
 编辑 `config.json`，填入需要的股票信息：
 
 ```json
 {
-    "t_analysis_date": "2026-05-19",
-    "stocks": [
-        {
-            "stock_name": "神火股份",
-            "stock_code": "000933",
-            "start_date": "2025-01-01",
-            "end_date": "2026-05-19",
-            "output_file": "神火股份抓取数据.xlsx",
-            "analysis": {
-                "grid_levels": 4,
-                "atr_multiplier": 0.5,
-                "t_single_qty": 500
-            }
-        }
-    ]
+    "stocks": ["神火股份"],
+    "start_date": "2020-01-01",
+    "end_date": "2026-05-21",
+    "t_analysis_date": "2025-01-19~2026-05-21"
 }
 ```
+
+> **简化格式**：`stocks` 只写股票名称，程序自动查询股票代码。也支持完整格式见下方说明。
 
 #### 全局配置
 
@@ -93,6 +93,41 @@ pip install -r requirements.txt
 > 范围/列表模式自动过滤非交易日（周末/节假日），仅分析实际交易日，合并输出到一个Excel
 
 #### 股票配置
+
+支持两种配置格式：
+
+**格式一（简化版，程序自动查询代码）：**
+
+```json
+{
+    "stocks": ["神火股份"],
+    "start_date": "2020-01-01",
+    "end_date": "2026-05-21",
+    "t_analysis_date": "2025-01-19~2026-05-21"
+}
+```
+
+**格式二（完整版，手动指定所有参数）：**
+
+```json
+{
+    "t_analysis_date": "2026-05-19",
+    "stocks": [
+        {
+            "stock_name": "神火股份",
+            "stock_code": "000933",
+            "start_date": "2025-01-01",
+            "end_date": "2026-05-19",
+            "output_file": "神火股份抓取数据.xlsx",
+            "analysis": {
+                "grid_levels": 4,
+                "atr_multiplier": 0.5,
+                "t_single_qty": 500
+            }
+        }
+    ]
+}
+```
 
 | 字段 | 说明 | 示例 |
 |------|------|------|
@@ -161,6 +196,20 @@ python main.py --no-cache              # 忽略本地缓存，强制重新抓取
 | 波段5/10/20/30日 | 各周期×各阈值（3%/5%/8%/10%/15%/20%）详细统计 |
 | **量能分析** | 按成交量状态（放量/缩量/正常）分组统计各周期胜率 |
 | **背离分析** | 按背离类型（顶背离/底背离/无）分组统计各周期胜率 |
+
+### `output/*买卖建议报告.md` + `photo/*.png` — 买卖建议报告
+
+包含完整次日交易决策支持的 **Markdown 报告** 及 **PNG 截图**，内容结构：
+
+| 章节 | 内容 |
+|------|------|
+| **一、股票基础信息与估值分位** | 收盘价、PE/PB/总市值的历史百分位，估值水平判断 |
+| **二、价格与波段涨跌幅历史分位** | 5/10/20/30/90日涨跌幅 vs 历史均值/中位数对比 |
+| **三、当日综合策略信号（核心结论）** | 各周期正T/反T信号、MACD/RSI/量能/背离、综合胜率 |
+| **四、辅助决策信息** | 日内做T最佳阈值、技术指标共振检验 |
+| **五、最终交易建议总结** | 买入/卖出建议、买入区域、止损位、仓位建议 |
+
+> 报告文件命名格式：`{分析日期}{股票名称}买卖建议报告.md`
 
 ### `t_analysis/*_波段T信号_*.xlsx` — 波段T信号分析
 

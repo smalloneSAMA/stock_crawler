@@ -1818,7 +1818,7 @@ def md_to_image(md_content: str, output_path: str, width: int = 900) -> bool:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel='chrome')
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": width, "height": 1})
             page.set_content(html_template, wait_until="networkidle")
             page.wait_for_timeout(500)
