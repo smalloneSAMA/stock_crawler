@@ -483,7 +483,7 @@ def main():
         dist_result = None
         try:
             dist_result = analyze_swing_amplitude_distribution(
-                data, periods=[5, 10, 20, 30, 90], bin_width=2.0
+                data, periods=[5, 10, 20, 30, 90]
             )
             # 打印统计结果
             for p_str in ['5', '10', '20', '30', '90']:

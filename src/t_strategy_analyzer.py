@@ -1901,20 +1901,194 @@ def _bin_returns_weighted(vals, indices, is_up, bin_width=5.0):
     return bins
 
 
-def analyze_swing_amplitude_distribution(data, periods=None, bin_width=5.0):
+def _bin_returns_adaptive(vals, indices, is_up, n_bins=12):
     """
-    统计多周期（5/10/20/30/90日）上涨/下跌幅度历史分布，5%为一阶梯。
+    自适应分箱：局部密度决定等宽/等频的混合比例。
+    密集区域偏向等频（区间窄、展示细节），稀疏区域偏向等宽（区间宽、避免碎箱）。
+    结果：区间宽度和百分位增长都不极端，分布呈现更自然。
+
+    Args:
+        vals: 涨跌幅数值列表
+        indices: 对应的时间索引（用于加权计数）
+        is_up: True=上涨侧, False=下跌侧
+        n_bins: 目标箱数（默认12）
+    Returns:
+        { "0.0~1.5": {"次数": 35, "加权次数": 123.4}, ... }
+    """
+    if not vals:
+        return {}
+    n = len(vals)
+    if n <= n_bins:
+        n_bins = max(2, n)
+
+    paired = sorted(zip(vals, indices), key=lambda x: x[0])
+    sorted_vals = [p[0] for p in paired]
+    v_min, v_max = sorted_vals[0], sorted_vals[-1]
+    total_width = v_max - v_min
+    if total_width <= 0:
+        total_width = 0.01
+
+    # ── 全局平均密度（用于归一化）──
+    global_density = n / total_width if total_width > 0 else 1
+    # 密度窗口宽度：总范围的 5%，至少覆盖 10 个样本
+    density_window = max(total_width * 0.05, sorted_vals[min(n-1, 10)] - sorted_vals[0])
+
+    def _density_at_value(v):
+        """返回值 v 附近的局部归一化密度 [0, 1]"""
+        half = density_window / 2
+        lo = v - half
+        hi = v + half
+        # 二分查找窗口内的样本数
+        import bisect
+        li = bisect.bisect_left(sorted_vals, lo)
+        ri = bisect.bisect_right(sorted_vals, hi)
+        cnt = ri - li
+        w = sorted_vals[min(ri-1, n-1)] - sorted_vals[li] if ri > li else density_window
+        if w < 0.001:
+            return 0.5
+        local_d = cnt / w if w > 0 else global_density
+        ratio = local_d / global_density if global_density > 0 else 0.5
+        return max(0.0, min(1.0, ratio))
+
+    # ── 对每个边界位置计算自适应位置 ──
+    adaptive_bounds = [v_min]
+    for i in range(1, n_bins):
+        # 等宽位置
+        ew = v_min + total_width * i / n_bins
+        # 等频位置
+        ef_idx = min(i * n // n_bins, n - 1)
+        ef = sorted_vals[ef_idx]
+        # 初始混合（用于确定密度检测位置）
+        init_bound = ew * 0.4 + ef * 0.6
+        # 在该位置检测局部密度
+        ld = _density_at_value(init_bound)
+        # 密集(ld≈1)→偏等频(ef), 稀疏(ld≈0)→偏等宽(ew)
+        bound = ew * (1 - ld) + ef * ld
+        adaptive_bounds.append(bound)
+    adaptive_bounds.append(v_max)
+
+    # 确保单调递增
+    for i in range(1, len(adaptive_bounds)):
+        if adaptive_bounds[i] <= adaptive_bounds[i - 1]:
+            adaptive_bounds[i] = adaptive_bounds[i - 1] + 0.01
+
+    # ── 按自适应边界分箱（同时记录在 paired 中的位置）──
+    pos = 0
+    raw_bins = []  # [(lo_r, hi_r, count, w_sum, start_pos, end_pos), ...]
+    for b in range(len(adaptive_bounds) - 1):
+        lo = adaptive_bounds[b]
+        hi = adaptive_bounds[b + 1]
+        seg_vals = []
+        seg_indices = []
+        bin_start = pos
+        while pos < n:
+            v, idx = paired[pos]
+            if lo <= v < hi:
+                seg_vals.append(v)
+                seg_indices.append(idx)
+                pos += 1
+            elif b == len(adaptive_bounds) - 2 and lo <= v <= hi + 0.001:
+                seg_vals.append(v)
+                seg_indices.append(idx)
+                pos += 1
+            else:
+                break
+        if seg_vals:
+            count = len(seg_vals)
+            w_sum = sum(idx + 1 for idx in seg_indices)
+            lo_r = round(min(seg_vals), 1)
+            hi_r = round(max(seg_vals), 1)
+            raw_bins.append((lo_r, hi_r, count, round(w_sum, 1), bin_start, pos))
+
+    # ── 合并过小箱（count < 总样本*1.5% 且 < 2），传播位置 ──
+    min_count = max(2, int(n * 0.015))
+    filled = []
+    for lo_r, hi_r, count, w_sum, st, en in raw_bins:
+        if (count < min_count or count == 0) and filled:
+            prev = filled[-1]
+            filled[-1] = (prev[0], max(prev[1], hi_r), prev[2] + count,
+                           round(prev[3] + w_sum, 1), prev[4], en)
+        else:
+            filled.append((lo_r, hi_r, count, w_sum, st, en))
+    if len(filled) >= 2 and filled[0][2] < min_count:
+        filled[1] = (filled[0][0], filled[1][1], filled[0][2] + filled[1][2],
+                      round(filled[0][3] + filled[1][3], 1), filled[0][4], filled[1][5])
+        filled = filled[1:]
+
+    # 合并标签相同的相邻箱
+    merged = []
+    for lo_r, hi_r, count, w_sum, st, en in filled:
+        if merged and merged[-1][0] == lo_r and merged[-1][1] == hi_r:
+            prev = merged[-1]
+            merged[-1] = (prev[0], max(prev[1], hi_r), prev[2] + count,
+                           round(prev[3] + w_sum, 1), prev[4], en)
+        else:
+            merged.append((lo_r, hi_r, count, w_sum, st, en))
+
+    # ── 拆分过大的箱（百分位跳 > 5%）──
+    max_count_per_bin = max(1, int(n * 0.05))
+    split_bins = []
+    for lo_r, hi_r, count, w_sum, st, en in merged:
+        if count <= max_count_per_bin:
+            split_bins.append((lo_r, hi_r, count, w_sum))
+        else:
+            # 等频拆分：将子数据按样本数均分
+            sub_pairs = paired[st:en]
+            sub_n = max(2, (count + max_count_per_bin - 1) // max_count_per_bin)
+            # 等频分箱子数据
+            per = len(sub_pairs) // sub_n
+            rem = len(sub_pairs) % sub_n
+            pos2 = 0
+            for k in range(sub_n):
+                sz = per + (1 if k < rem else 0)
+                if sz <= 0:
+                    continue
+                seg = sub_pairs[pos2:pos2 + sz]
+                s_lo = round(min(p[0] for p in seg), 1)
+                s_hi = round(max(p[0] for p in seg), 1)
+                s_cnt = len(seg)
+                s_w = round(sum(p[1] + 1 for p in seg), 1)
+                split_bins.append((s_lo, s_hi, s_cnt, s_w))
+                pos2 += sz
+
+    # ── 再次合并过小箱 ──
+    merged2 = []
+    for lo_r, hi_r, count, w_sum in split_bins:
+        if (count < min_count) and merged2:
+            prev = merged2[-1]
+            merged2[-1] = (prev[0], max(prev[1], hi_r), prev[2] + count,
+                           round(prev[3] + w_sum, 1))
+        else:
+            merged2.append((lo_r, hi_r, count, w_sum))
+
+    # ── 生成最终字典 ──
+    result = {}
+    for lo_r, hi_r, count, w_sum in merged2:
+        if is_up:
+            label = f'{lo_r}~{hi_r}'
+        else:
+            label = f'-{hi_r}~-{lo_r}'
+        result[label] = {'次数': count, '加权次数': w_sum}
+    return result
+
+
+def analyze_swing_amplitude_distribution(data, periods=None, bins_per_side=None):
+    """
+    统计多周期（5/10/20/30/90日）上涨/下跌幅度历史分布。
+    采用自适应分箱：在等宽与等频之间取平衡，密集处区间较窄、稀疏处区间较宽，
+    使区间宽度和百分位增长都不极端，分布呈现更自然。
 
     对每个周期：
       1. 在时间正序数据上滑动窗口，计算 N 日区间涨跌幅
-      2. 将涨跌幅按 5% 宽度分桶，统计每个桶的出现次数（含加权次数）
+      2. 自适应分箱，统计每箱出现次数（含加权次数）
       3. 分别统计上涨侧(>0)和下跌侧(<0)的分布
       4. 计算最大值、平均值、加权平均（线性衰减权重）、中位数
 
     Args:
         data: K线数据（最新在前）
         periods: 统计周期列表（默认 [5, 10, 20, 30, 90]）
-        bin_width: 每个桶的宽度（%），默认 5%
+        n_bins: 每侧目标箱数。None 时根据样本数自动计算：max(8, min(50, n//10))。
+        上涨侧和下跌侧各自独立计算，不强制相同。
 
     Returns:
         {
@@ -1960,8 +2134,21 @@ def analyze_swing_amplitude_distribution(data, periods=None, bin_width=5.0):
         up_returns = [returns[i] for i in up_indices]
         down_returns_abs = [abs(returns[i]) for i in down_indices]
 
-        up_dist = _bin_returns_weighted(up_returns, up_indices, is_up=True, bin_width=bin_width)
-        down_dist = _bin_returns_weighted(down_returns_abs, down_indices, is_up=False, bin_width=bin_width)
+        # 每侧独立计算目标箱数（根据各自样本量，同时保证5%约束）
+        if bins_per_side is None:
+            n_up = max(8, min(50, len(up_returns) // 10))
+            n_down = max(8, min(50, len(down_returns_abs) // 10))
+            # 保证5%约束所需的最小箱数（与 _bin_returns_adaptive 内部 max_count 一致）
+            up_mc = max(1, int(len(up_returns) * 0.05))
+            down_mc = max(1, int(len(down_returns_abs) * 0.05))
+            n_up = max(n_up, min((len(up_returns) + up_mc - 1) // up_mc, 50))
+            n_down = max(n_down, min((len(down_returns_abs) + down_mc - 1) // down_mc, 50))
+        else:
+            n_up = n_down = bins_per_side
+
+        # 自适应分箱（等宽与等频的平衡）
+        up_dist = _bin_returns_adaptive(up_returns, up_indices, is_up=True, n_bins=n_up)
+        down_dist = _bin_returns_adaptive(down_returns_abs, down_indices, is_up=False, n_bins=n_down)
 
         up_stats = _calc_swing_stats_weighted(up_indices, up_returns, total)
         down_stats = _calc_swing_stats_weighted(down_indices, down_returns_abs, total)
@@ -2044,7 +2231,7 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         '',
         '【策略说明】',
         '  统计 5/10/20/30/90 日周期内股价的上涨/下跌幅度分布。',
-        '  以 2% 为一个阶梯，统计各区间出现的次数（加权次数按时间衰减）。',
+        '  采用自适应分箱：密集处区间较窄、稀疏处区间较宽，区间宽度和百分位增长都不极端。',
         '',
         '【分析时间范围】',
         f'  {data_time_range}' if data_time_range else '',
@@ -2056,7 +2243,7 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         '  中位数: 样本按大小排序后的中间值',
         '',
         '【分布解读】',
-        '  分布表显示了涨跌幅在2%区间内的分布次数和累积百分位。',
+        '  分布表显示了涨跌幅在各自适应区间内的分布次数和累积百分位。',
         '  上涨幅度侧（正收益）和下跌幅度侧（负收益绝对值）分别统计。',
         '  加权次数 = 每个样本权重（位置索引+1）之和，越新的数据权重越大。',
         '  百分位 = 当前区间上限以内所有样本的累积占比（从小到大）。',
