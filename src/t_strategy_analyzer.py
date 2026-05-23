@@ -2061,13 +2061,32 @@ def _bin_returns_adaptive(vals, indices, is_up, n_bins=12):
         else:
             merged2.append((lo_r, hi_r, count, w_sum))
 
-    # ── 生成最终字典 ──
+    # ── 生成最终字典（确保标签连续，不出现视觉断裂）──
     result = {}
-    for lo_r, hi_r, count, w_sum in merged2:
+    # 转为可变列表，按 lo 排序
+    edges = [[lo, hi, count, w_sum] for lo, hi, count, w_sum in merged2]
+    edges.sort(key=lambda x: x[0])
+    # 第一遍：hi 向下一个的 lo 对齐
+    for i in range(len(edges) - 1):
+        if edges[i + 1][0] > edges[i][1]:
+            edges[i][1] = edges[i + 1][0]
+    # 第二遍：lo 向前一个的 hi 对齐，统一2位小数
+    for i in range(len(edges)):
+        if i > 0:
+            edges[i][0] = edges[i - 1][1]
+        edges[i][0] = round(edges[i][0], 2)
+        edges[i][1] = round(edges[i][1], 2)
+        lo_r, hi_r, count, w_sum = edges[i]
         if is_up:
             label = f'{lo_r}~{hi_r}'
         else:
             label = f'-{hi_r}~-{lo_r}'
+        # 处理重复标签（极少情况）
+        base = label
+        dup = 1
+        while label in result:
+            dup += 1
+            label = f'{base}#{dup}'
         result[label] = {'次数': count, '加权次数': w_sum}
     return result
 
