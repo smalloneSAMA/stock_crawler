@@ -2124,9 +2124,9 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
         # 下跌侧按从大到小显示（与之前一致）
         down_labels_display = sorted(down_dist.keys(), key=lambda x: -float(x.split('~')[1].replace('-', '')))
 
-        dist_headers = ['上涨区间', '上涨次数', '上涨加权次数', '上涨百分位%',
-                        '下跌区间', '下跌次数', '下跌加权次数', '下跌百分位%']
-        dist_widths = [14, 10, 14, 12, 14, 10, 14, 12]
+        dist_headers = ['上涨区间', '上涨次数', '上涨概率%', '上涨加权次数', '上涨百分位%',
+                        '下跌区间', '下跌次数', '下跌概率%', '下跌加权次数', '下跌百分位%']
+        dist_widths = [14, 10, 10, 14, 12, 14, 10, 10, 14, 12]
         dist_rows = []
 
         max_len = max(len(up_labels_sorted), len(down_labels_display))
@@ -2134,14 +2134,16 @@ def generate_amplitude_distribution_excel(dist_data, stock_name, stock_code, out
             row = []
             if i < len(up_labels_sorted):
                 lab = up_labels_sorted[i]
-                row.extend([lab, up_dist[lab]['次数'], up_dist[lab]['加权次数'], up_cumul[lab]])
+                up_prob = round(up_dist[lab]['次数'] / up_total * 100, 1)
+                row.extend([lab, up_dist[lab]['次数'], up_prob, up_dist[lab]['加权次数'], up_cumul[lab]])
             else:
-                row.extend(['', '', '', ''])
+                row.extend(['', '', '', '', ''])
             if i < len(down_labels_display):
                 lab = down_labels_display[i]
-                row.extend([lab, down_dist[lab]['次数'], down_dist[lab]['加权次数'], down_cumul[lab]])
+                down_prob = round(down_dist[lab]['次数'] / down_total * 100, 1)
+                row.extend([lab, down_dist[lab]['次数'], down_prob, down_dist[lab]['加权次数'], down_cumul[lab]])
             else:
-                row.extend(['', '', '', ''])
+                row.extend(['', '', '', '', ''])
             dist_rows.append(row)
 
         sheets_xml.append(_build_sheet_xml('波段' + period_str + '日详情', dist_headers, dist_rows, dist_widths))
