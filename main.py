@@ -312,30 +312,26 @@ def main():
                 bs = intraday_result["基础统计"]
                 print(f"  [日内T] {bs['总交易日']}个交易日, "
                       f"上涨日{bs['上涨日(收盘>开盘)']}个({bs['上涨日占比%']}%)")
-                # 反T - 找胜率最高且触发天数>=5的梯度
+                # 反T - 按胜率降序列出 Top 3，触发天数>=5
                 ft = intraday_result["反T"]
-                best_ft_idx = -1
-                for i in range(len(ft["梯度"])):
-                    if ft["触发天数"][i] >= 5:
-                        if best_ft_idx == -1 or ft["胜率%"][i] > ft["胜率%"][best_ft_idx]:
-                            best_ft_idx = i
-                if best_ft_idx >= 0:
-                    print(f"  [反T] 最优: {ft['梯度'][best_ft_idx]}%梯度 "
-                          f"(触发{ft['触发天数'][best_ft_idx]}天, "
-                          f"胜率{ft['胜率%'][best_ft_idx]}%, "
-                          f"均收益{ft['平均收益%'][best_ft_idx]}%)")
-                # 正T - 找胜率最高且触发天数>=5的梯度
+                ft_top = sorted(
+                    [(i, ft["胜率%"][i], ft["梯度"][i], ft["触发天数"][i], ft["平均收益%"][i])
+                     for i in range(len(ft["梯度"])) if ft["触发天数"][i] >= 5],
+                    key=lambda x: x[1], reverse=True
+                )[:3]
+                for rank, (idx, wr, th, td, ar) in enumerate(ft_top, 1):
+                    tag = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
+                    print(f"  [反T] {tag}Top{rank}: {th}%梯度 (触发{td}天, 胜率{wr}%, 均收益{ar}%)")
+                # 正T - 按胜率降序列出 Top 3，触发天数>=5
                 zt = intraday_result["正T"]
-                best_zt_idx = -1
-                for i in range(len(zt["梯度"])):
-                    if zt["触发天数"][i] >= 5:
-                        if best_zt_idx == -1 or zt["胜率%"][i] > zt["胜率%"][best_zt_idx]:
-                            best_zt_idx = i
-                if best_zt_idx >= 0:
-                    print(f"  [正T] 最优: {zt['梯度'][best_zt_idx]}%梯度 "
-                          f"(触发{zt['触发天数'][best_zt_idx]}天, "
-                          f"胜率{zt['胜率%'][best_zt_idx]}%, "
-                          f"均收益{zt['平均收益%'][best_zt_idx]}%)")
+                zt_top = sorted(
+                    [(i, zt["胜率%"][i], zt["梯度"][i], zt["触发天数"][i], zt["平均收益%"][i])
+                     for i in range(len(zt["梯度"])) if zt["触发天数"][i] >= 5],
+                    key=lambda x: x[1], reverse=True
+                )[:3]
+                for rank, (idx, wr, th, td, ar) in enumerate(zt_top, 1):
+                    tag = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
+                    print(f"  [正T] {tag}Top{rank}: {th}%梯度 (触发{td}天, 胜率{wr}%, 均收益{ar}%)")
             else:
                 print(f"  [日内T] 数据不足")
 

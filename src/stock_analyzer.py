@@ -1357,51 +1357,64 @@ def generate_buy_sell_report_md(
         L(f"如果您计划进行日内交易，可以参考以下基于{total_td}个交易日统计的最佳阈值：")
         L()
 
-        # 找最佳正T梯度
+        # ── 提取日内T数据 ──
         zt = intraday_result.get("正T", {})
         zt_grads = zt.get("梯度", [])
         zt_wins = zt.get("胜率%", [])
         zt_days = zt.get("触发天数", [])
         zt_returns = zt.get("平均收益%", [])
-        best_zt_idx = -1
-        for i in range(len(zt_grads)):
-            if zt_days[i] >= 5:
-                if best_zt_idx == -1 or zt_wins[i] > zt_wins[best_zt_idx]:
-                    best_zt_idx = i
 
-        # 找最佳反T梯度
         ft = intraday_result.get("反T", {})
         ft_grads = ft.get("梯度", [])
         ft_wins = ft.get("胜率%", [])
         ft_days = ft.get("触发天数", [])
         ft_returns = ft.get("平均收益%", [])
-        best_ft_idx = -1
-        for i in range(len(ft_grads)):
-            if ft_days[i] >= 5:
-                if best_ft_idx == -1 or ft_wins[i] > ft_wins[best_ft_idx]:
-                    best_ft_idx = i
 
-        # 也找次优梯度（用于显示范围）
+        # ── 通用：按胜率排序取 Top N，触发天数 >= min_days ──
+        def _top_n_by_win(grads, wins, days, returns, n=3, min_days=5):
+            candidates = [
+                (i, wins[i], days[i], returns[i])
+                for i in range(len(grads))
+                if days[i] >= min_days
+            ]
+            candidates.sort(key=lambda x: x[1], reverse=True)  # 按胜率降序
+            return candidates[:n]
 
+        zt_top3 = _top_n_by_win(zt_grads, zt_wins, zt_days, zt_returns)
+        ft_top3 = _top_n_by_win(ft_grads, ft_wins, ft_days, ft_returns)
 
-        L("| 策略类型 | 最佳阈值 | 胜率 | 触发次数 | 平均收益 | 执行方式 |")
-        L("| --- | --- | --- | --- | --- | --- |")
-
+        # 保持向后兼容：best_* 指向胜率第一的梯度
+        best_zt_idx = zt_top3[0][0] if zt_top3 else -1
+        best_ft_idx = ft_top3[0][0] if ft_top3 else -1
         if best_zt_idx >= 0:
             zt_th = zt_grads[best_zt_idx]
             zt_win = zt_wins[best_zt_idx]
             zt_day = zt_days[best_zt_idx]
             zt_ret = zt_returns[best_zt_idx]
-            fut_price_low = round(price * (1 - zt_th / 100), 2) if isinstance(price, (int, float)) else "?"
-            L(f"| **日内正T (先买后卖)** | **{zt_th:.1f}%** | {zt_win:.1f}% | {zt_day}次 | {zt_ret:.2f}% | 开盘下跌超过**{zt_th:.1f}%** 时买入，收盘卖出。 |")
-
         if best_ft_idx >= 0:
             ft_th = ft_grads[best_ft_idx]
             ft_win = ft_wins[best_ft_idx]
             ft_day = ft_days[best_ft_idx]
             ft_ret = ft_returns[best_ft_idx]
-            fut_price_high = round(price * (1 + ft_th / 100), 2) if isinstance(price, (int, float)) else "?"
-            L(f"| **日内反T (先卖后买)** | **{ft_th:.1f}%** | {ft_win:.1f}% | {ft_day}次 | {ft_ret:.2f}% | 开盘上涨超过**{ft_th:.1f}%** 时卖出，收盘买回。 |")
+
+        # ── 输出表格：正T Top3 + 反T Top3 ──
+        headers = ["策略类型", "排名", "阈值", "胜率", "触发次数", "平均收益"]
+        L("| " + " | ".join(headers) + " |")
+        L("| " + " | ".join(["---"] * len(headers)) + " |")
+
+        for rank, (idx, win, day, ret) in enumerate(zt_top3, 1):
+            th = zt_grads[idx]
+            tag = "⭐⭐⭐" if rank == 1 else ("⭐⭐" if rank == 2 else "⭐")
+            L(f"| 日内正T (先买后卖) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次 | {ret:.2f}% |")
+        if not zt_top3:
+            L("| 日内正T (先买后卖) | — | — | — | 数据不足 | — |")
+
+        for rank, (idx, win, day, ret) in enumerate(ft_top3, 1):
+            th = ft_grads[idx]
+            tag = "⭐⭐⭐" if rank == 1 else ("⭐⭐" if rank == 2 else "⭐")
+            L(f"| 日内反T (先卖后买) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次 | {ret:.2f}% |")
+        if not ft_top3:
+            L("| 日内反T (先卖后买) | — | — | — | 数据不足 | — |")
 
         L()
         L("**执行建议：**")
@@ -1409,9 +1422,22 @@ def generate_buy_sell_report_md(
         if best_zt_idx >= 0:
             fut_price_low = round(price * (1 - zt_th / 100), 2) if isinstance(price, (int, float)) else "?"
             L(f"* 若次日开盘价较今日收盘价 **下跌超过{zt_th:.1f}%（即低于约{fut_price_low}元）** ，可执行日内正T，历史胜率超{zt_win:.0f}%。")
+            # 如果 Top2 阈值不同，给出备选
+            if len(zt_top3) >= 2:
+                th2 = zt_grads[zt_top3[1][0]]
+                if abs(th2 - zt_th) > 0.5:
+                    w2 = zt_wins[zt_top3[1][0]]
+                    p2 = round(price * (1 - th2 / 100), 2) if isinstance(price, (int, float)) else "?"
+                    L(f"  - 备选：下跌超过{th2:.1f}%（低于约{p2}元）也可操作，胜率{w2:.1f}%。")
         if best_ft_idx >= 0:
             fut_price_high = round(price * (1 + ft_th / 100), 2) if isinstance(price, (int, float)) else "?"
             L(f"* 若次日开盘价 **上涨超过{ft_th:.1f}%（即高于约{fut_price_high}元）** ，可执行日内反T，历史胜率{ft_win:.1f}%，需注意上涨趋势中可能卖飞。")
+            if len(ft_top3) >= 2:
+                th2 = ft_grads[ft_top3[1][0]]
+                if abs(th2 - ft_th) > 0.5:
+                    w2 = ft_wins[ft_top3[1][0]]
+                    p2 = round(price * (1 + th2 / 100), 2) if isinstance(price, (int, float)) else "?"
+                    L(f"  - 备选：上涨超过{th2:.1f}%（高于约{p2}元）也可操作，胜率{w2:.1f}%。")
     else:
         L("日内做T数据不足，无法提供策略参考。")
     L()
