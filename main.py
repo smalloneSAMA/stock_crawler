@@ -301,9 +301,12 @@ def main():
         all_signals = None
         try:
             raw_code = config["stock_code"].replace(".SZ", "").replace(".SH", "")
+            # 数据时间范围（data 最新在前，取首尾日期）
+            t_dates = [r.get('日期', '') for r in data if r.get('日期')]
+            t_time_suffix = f"_{t_dates[-1]}_{t_dates[0]}" if t_dates else ""
             t_output = os.path.join(
                 t_analysis_dir,
-                config.get("output_file", "report").replace(".xlsx", "_T策略分析.xlsx"),
+                config.get("output_file", "report").replace(".xlsx", f"_T策略分析{t_time_suffix}.xlsx"),
             )
 
             # 日内做T分析
@@ -319,9 +322,11 @@ def main():
                      for i in range(len(ft["梯度"])) if ft["触发天数"][i] >= 5],
                     key=lambda x: x[1], reverse=True
                 )[:3]
+                total_td = bs["总交易日"]
                 for rank, (idx, wr, th, td, ar) in enumerate(ft_top, 1):
                     tag = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
-                    print(f"  [反T] {tag}Top{rank}: {th}%梯度 (触发{td}天, 胜率{wr}%, 均收益{ar}%)")
+                    prob = round(td / total_td * 100, 1) if total_td > 0 else 0
+                    print(f"  [反T] {tag}Top{rank}: {th}%梯度 (触发{td}天/{prob}%, 胜率{wr}%, 均收益{ar}%)")
                 # 正T - 按胜率降序列出 Top 3，触发天数>=5
                 zt = intraday_result["正T"]
                 zt_top = sorted(
@@ -331,7 +336,8 @@ def main():
                 )[:3]
                 for rank, (idx, wr, th, td, ar) in enumerate(zt_top, 1):
                     tag = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
-                    print(f"  [正T] {tag}Top{rank}: {th}%梯度 (触发{td}天, 胜率{wr}%, 均收益{ar}%)")
+                    prob = round(td / total_td * 100, 1) if total_td > 0 else 0
+                    print(f"  [正T] {tag}Top{rank}: {th}%梯度 (触发{td}天/{prob}%, 胜率{wr}%, 均收益{ar}%)")
             else:
                 print(f"  [日内T] 数据不足")
 
@@ -502,14 +508,15 @@ def main():
                         print(f"      密集区间: {' | '.join(parts)}")
 
             # 生成分布分析Excel
-            dist_output = os.path.join(
-                t_analysis_dir,
-                config.get("output_file", "report").replace(".xlsx", "_波段涨跌幅分布.xlsx"),
-            )
             # 获取数据时间范围（data 按日期降序，最新在前）
             data_dates = [r.get('日期', '') for r in data if r.get('日期')]
+            dist_time_suffix = f"_{data_dates[-1]}_{data_dates[0]}" if data_dates else ""
+            dist_output = os.path.join(
+                t_analysis_dir,
+                config.get("output_file", "report").replace(".xlsx", f"_波段涨跌幅分布{dist_time_suffix}.xlsx"),
+            )
             if data_dates:
-                data_time_range = f"{data_dates[0]} ~ {data_dates[-1]}"
+                data_time_range = f"{data_dates[-1]} ~ {data_dates[0]}"
             else:
                 data_time_range = "未知"
 

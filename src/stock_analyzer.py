@@ -1404,15 +1404,17 @@ def generate_buy_sell_report_md(
 
         for rank, (idx, win, day, ret) in enumerate(zt_top3, 1):
             th = zt_grads[idx]
+            prob = round(day / total_td * 100, 1) if total_td > 0 else 0
             tag = "⭐⭐⭐" if rank == 1 else ("⭐⭐" if rank == 2 else "⭐")
-            L(f"| 日内正T (先买后卖) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次 | {ret:.2f}% |")
+            L(f"| 日内正T (先买后卖) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次({prob}%) | {ret:.2f}% |")
         if not zt_top3:
             L("| 日内正T (先买后卖) | — | — | — | 数据不足 | — |")
 
         for rank, (idx, win, day, ret) in enumerate(ft_top3, 1):
             th = ft_grads[idx]
+            prob = round(day / total_td * 100, 1) if total_td > 0 else 0
             tag = "⭐⭐⭐" if rank == 1 else ("⭐⭐" if rank == 2 else "⭐")
-            L(f"| 日内反T (先卖后买) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次 | {ret:.2f}% |")
+            L(f"| 日内反T (先卖后买) | {tag} Top{rank} | {th:.1f}% | {win:.1f}% | {day}次({prob}%) | {ret:.2f}% |")
         if not ft_top3:
             L("| 日内反T (先卖后买) | — | — | — | 数据不足 | — |")
 
