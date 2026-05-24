@@ -1447,10 +1447,28 @@ def generate_buy_sell_report_md(
     # 4.2 技术指标共振检验
     L("#### **4.2 技术指标共振检验**")
     L()
-    tech = td.get("技术指标", {})
-    macd_dir = tech.get("MACD", {}).get("方向", "N/A")
-    rsi_val = tech.get("RSI(14)", "N/A")
-    rsi_judge = tech.get("RSI判断", "")
+    # ── 优先使用波段T信号的技术指标（与分析日期一致），没有信号时用趋势分析 ──
+    if signal_row and signal_row.get("技术指标"):
+        sig_tech = signal_row["技术指标"]
+        macd_dir = sig_tech.get("MACD方向", "N/A")
+        rsi_val = sig_tech.get("RSI", "N/A")
+        rsi_judge = ""
+        if isinstance(rsi_val, (int, float)):
+            if rsi_val > 80:
+                rsi_judge = "超买"
+            elif rsi_val > 60:
+                rsi_judge = "偏强"
+            elif rsi_val < 20:
+                rsi_judge = "超卖"
+            elif rsi_val < 40:
+                rsi_judge = "偏弱"
+            else:
+                rsi_judge = "中性"
+    else:
+        trend_tech = td.get("技术指标", {})
+        macd_dir = trend_tech.get("MACD", {}).get("方向", "N/A")
+        rsi_val = trend_tech.get("RSI(14)", "N/A")
+        rsi_judge = trend_tech.get("RSI判断", "")
 
     # 计算多少周期发出正T/反T信号
     zt_count = len([s for s in (signal_row.get("信号", []) if signal_row else []) if s.get("信号类型") == "正T"])
