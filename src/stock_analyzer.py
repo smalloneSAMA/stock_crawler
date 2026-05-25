@@ -1164,8 +1164,8 @@ def generate_buy_sell_report_md(
             return None
         return round((closes[0] - prev) / prev * 100, 2)
 
-    L("| 周期 | 最新波段涨跌幅 | 所处历史分位 | 历史均值 | 历史中位数 | 解读 |")
-    L("| --- | --- | --- | --- | --- | --- |")
+    L("| 周期 | 最新波段涨跌幅 | 所处历史分位 | 历史最大值 | 历史均值 | 历史中位数 | 解读 |")
+    L("| --- | --- | --- | --- | --- | --- | --- |")
 
     for p_str, p_days in sorted(period_labels.items()):
         latest_ret = _latest_swing_ret(p_days)
@@ -1176,7 +1176,7 @@ def generate_buy_sell_report_md(
         dist_pd = (distribution_result or {}).get(p_str, {})
         if dist_pd.get("数据不足", True):
             direction = "上涨" if latest_ret > 0 else "下跌"
-            L(f"| **{p_str}日** | {latest_ret:+.2f}% | 数据不足 | - | - | 数据不足以计算历史分位 |")
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | 数据不足 | - | - | - | 数据不足以计算历史分位 |")
             continue
 
         up_s = dist_pd.get("上涨幅度", {})
@@ -1241,7 +1241,7 @@ def generate_buy_sell_report_md(
                 note = f"近{p_str}日涨幅{latest_ret:+.2f}%，{ex_pct}%的历史上涨幅度小于此值，高于历史均值{mean_val:.2f}%，涨幅偏大。"
             else:
                 note = f"近{p_str}日涨幅{latest_ret:+.2f}%，仅{round(100-ex_pct,1)}%的历史上涨幅度大于此值，处于历史极高位置。"
-            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (涨幅) | {median_val:.2f}% (涨幅) | {note} |")
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {up_s.get("最大值", 0):.2f}% (涨幅) | {mean_val:.2f}% (涨幅) | {median_val:.2f}% (涨幅) | {note} |")
         else:
             ret_abs = abs(latest_ret)
             mean_val = down_mean
@@ -1260,7 +1260,7 @@ def generate_buy_sell_report_md(
                 note = f"近{p_str}日下跌{ret_abs:.2f}%，{deeper_pct}%的历史跌幅大于此值（{ex_pct}%更浅），接近中位数{median_val:.2f}%，处于中等回调水平。"
             else:
                 note = f"近{p_str}日下跌{ret_abs:.2f}%，{deeper_pct}%的历史跌幅大于此值（{ex_pct}%更浅），大于中位数{median_val:.2f}%，回调幅度较小。"
-            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {mean_val:.2f}% (跌幅) | {median_val:.2f}% (跌幅) | {note} |")
+            L(f"| **{p_str}日** | {latest_ret:+.2f}% | {pct_desc} | {down_s.get("最大值", 0):.2f}% (跌幅) | {mean_val:.2f}% (跌幅) | {median_val:.2f}% (跌幅) | {note} |")
 
     L()
     L("---")
@@ -1304,14 +1304,24 @@ def generate_buy_sell_report_md(
                 note = f"近{period}涨跌幅{ret:+.2f}%，未达阈值，无强烈交易信号。"
             L(f"| **{period}周期建议** | {action_display} | {note} |")
 
-        # 计算综合胜率（取所有周期信号胜率的均值，与Excel一致）
+        # 计算综合胜率：看多只算买入信号，看空只算卖出信号
         win_rates = []
+        is_bullish = "买入" in overall or "正T" in overall
+        is_bearish = "卖出" in overall or "反T" in overall
         for s in sig_list:
             wr = s.get("历史胜率%", "")
-            if isinstance(wr, (int, float)):
+            action = s.get("建议操作", "")
+            if not isinstance(wr, (int, float)):
+                continue
+            if is_bullish and "买入" in action:
+                win_rates.append(wr)
+            elif is_bearish and "卖出" in action:
+                win_rates.append(wr)
+            elif not is_bullish and not is_bearish:
                 win_rates.append(wr)
         combined_win_rate = round(sum(win_rates) / len(win_rates), 1) if win_rates else "-"
-        L(f"| **综合胜率** | **{combined_win_rate}%** | 基于历史统计，所有触发信号的周期（正T/反T）的平均胜率。 |")
+        direction_note = "买入信号" if is_bullish else "卖出信号" if is_bearish else "所有信号"
+        L(f"| **综合胜率** | **{combined_win_rate}%** | 基于历史统计，当前方向为{direction_note}的平均胜率。 |")
         L(f"| **MACD方向** | **{tech.get('MACD方向', 'N/A')}** | 中期趋势指标，对交易信号方向形成支撑或警示。 |")
         rsi_val = tech.get("RSI", "N/A")
         rsi_note = "处于超买区域(>70)，注意回调风险。" if isinstance(rsi_val, (int, float)) and rsi_val > 70 else \
@@ -1601,12 +1611,22 @@ def generate_buy_sell_report_md(
                 if ret > up_mean * 1.5:  # 涨幅超过均值1.5倍 = 极端
                     extreme_bearish += 1  # 超涨 = 潜在看空风险
 
-    # ── 6. 综合胜率 ──
+    # ── 6. 综合胜率（看多只算买入信号，看空只算卖出信号）──
     if signal_row and signal_row.get("信号"):
         win_rates = []
+        overall = signal_row.get("综合建议", "")
+        is_bullish = "买入" in overall or "正T" in overall
+        is_bearish = "卖出" in overall or "反T" in overall
         for s in signal_row["信号"]:
             wr = s.get("历史胜率%", "")
-            if isinstance(wr, (int, float)):
+            action = s.get("建议操作", "")
+            if not isinstance(wr, (int, float)):
+                continue
+            if is_bullish and "买入" in action:
+                win_rates.append(wr)
+            elif is_bearish and "卖出" in action:
+                win_rates.append(wr)
+            elif not is_bullish and not is_bearish:
                 win_rates.append(wr)
         combined_win_rate = round(sum(win_rates) / len(win_rates), 1) if win_rates else "-"
     else:
@@ -1734,7 +1754,10 @@ def generate_buy_sell_report_md(
 
     # 追加综合胜率
     if combined_win_rate != '-':
-        logic.append(f"{len(logic)+1}. 历史统计显示，触发信号周期的综合平均胜率约为 **{combined_win_rate}%** 。")
+        is_bullish = "买入" in main_strategy or "做多" in main_strategy
+        is_bearish = "卖出" in main_strategy or "减仓" in main_strategy or "做空" in main_strategy
+        dir_text = "买入" if is_bullish else "卖出" if is_bearish else "综合"
+        logic.append(f"{len(logic)+1}. 历史统计显示，当前方向{dir_text}信号的综合平均胜率约为 **{combined_win_rate}%** 。")
 
     L("| 决策维度 | 结论 | 置信度 |")
     L("| --- | --- | --- |")
@@ -1879,7 +1902,7 @@ def md_to_image(md_content: str, output_path: str, width: int = 900) -> bool:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(channel='chrome', headless=True)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": width, "height": 1})
             page.set_content(html_template, wait_until="networkidle")
             page.wait_for_timeout(500)

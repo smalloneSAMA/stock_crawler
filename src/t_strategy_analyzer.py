@@ -1705,12 +1705,22 @@ def generate_consolidated_signal_excel(
         for p in periods_order:
             s = signal_map.get(p, {})
             row.append(s.get("建议操作", ""))
-        # 综合胜率：取所有周期胜率的均值
+        # 综合胜率：看多只算买入信号，看空只算卖出信号
         win_rates = []
+        overall = sig.get("综合建议", "")
+        is_bullish = "买入" in overall or "正T" in overall
+        is_bearish = "卖出" in overall or "反T" in overall
         for p in periods_order:
             s = signal_map.get(p, {})
             wr = s.get("历史胜率%", "")
-            if isinstance(wr, (int, float)) and wr != "-":
+            action = s.get("建议操作", "")
+            if not isinstance(wr, (int, float)) or wr == "-":
+                continue
+            if is_bullish and "买入" in action:
+                win_rates.append(wr)
+            elif is_bearish and "卖出" in action:
+                win_rates.append(wr)
+            elif not is_bullish and not is_bearish:
                 win_rates.append(wr)
         avg_win = round(sum(win_rates) / len(win_rates), 1) if win_rates else ""
         row.append(avg_win)
