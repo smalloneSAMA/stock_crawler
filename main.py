@@ -101,14 +101,12 @@ def main():
 
     # ── 确定输出目录 ──
     base_dir = args.output_dir or os.path.dirname(os.path.abspath(args.config))
-    data_dir = os.path.join(base_dir, "data")      # Excel 数据文件存放目录
+    data_dir = os.path.join(base_dir, "data")      # Excel 原始数据文件存放目录
+    output_dir = os.path.join(base_dir, "output")   # 所有分析报告在此目录下（按股票名分文件夹）
     cache_dir = os.path.join(base_dir, "cache")     # 缓存数据存放目录
-    report_dir = os.path.join(base_dir, "output")   # 分析报告存放目录
-    t_analysis_dir = os.path.join(base_dir, "t_analysis")  # T策略分析报告存放目录
-    photo_dir = os.path.join(base_dir, "photo")     # 报告图片存放目录
-    # 清空旧数据目录（保留缓存）
+    # 清空旧的 data 和 output 目录
     import shutil
-    for d in [photo_dir, t_analysis_dir, report_dir, data_dir]:
+    for d in [data_dir, output_dir]:
         if os.path.exists(d):
             shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
@@ -128,6 +126,20 @@ def main():
 
         start_date = config.get("start_date", "")
         end_date = config.get("end_date", "")
+
+        # ── 创建该股票的专属输出子目录 ──
+        stock_name_for_dir = config.get("stock_name", "").strip()
+        if not stock_name_for_dir:
+            stock_name_for_dir = config["stock_code"].replace(".SZ", "").replace(".SH", "")
+        stock_output_dir = os.path.join(output_dir, stock_name_for_dir)
+        # 五个分类子目录
+        buy_sell_dir = os.path.join(stock_output_dir, "买卖建议报告")
+        analysis_dir = os.path.join(stock_output_dir, "分析报告")
+        t_strategy_dir = os.path.join(stock_output_dir, "t策略分析")
+        t_signal_dir = os.path.join(stock_output_dir, "波段t信号")
+        amplitude_dir = os.path.join(stock_output_dir, "波段涨跌幅分布")
+        for d in [buy_sell_dir, analysis_dir, t_strategy_dir, t_signal_dir, amplitude_dir]:
+            os.makedirs(d, exist_ok=True)
 
         # ── 2a. 确定缓存路径，尝试加载本地缓存 ──
         base_output = config["output_file"]
@@ -244,10 +256,12 @@ def main():
                 data=data,
                 analysis_config=config.get("analysis"),
             )
-            # 分析报告保存到 output 文件夹
+            # 分析报告保存到「分析报告」子文件夹
+            report_latest_date = data[0].get("日期", "") if data else ""
+            report_stock_name = config.get("stock_name", "")
             report_file = os.path.join(
-                report_dir,
-                config.get("output_file", "report").replace(".xlsx", "_分析报告.txt"),
+                analysis_dir,
+                f"{report_latest_date}_{report_stock_name}_分析报告.txt".lstrip("_"),
             )
             with open(report_file, "w", encoding="utf-8") as f:
                 f.write(report)
@@ -303,10 +317,11 @@ def main():
             raw_code = config["stock_code"].replace(".SZ", "").replace(".SH", "")
             # 数据时间范围（data 最新在前，取首尾日期）
             t_dates = [r.get('日期', '') for r in data if r.get('日期')]
-            t_time_suffix = f"_{t_dates[-1]}_{t_dates[0]}" if t_dates else ""
+            t_latest = t_dates[0] if t_dates else ""
+            t_stock_name = config.get("stock_name", "")
             t_output = os.path.join(
-                t_analysis_dir,
-                config.get("output_file", "report").replace(".xlsx", f"_T策略分析{t_time_suffix}.xlsx"),
+                t_strategy_dir,
+                f"{t_latest}_{t_stock_name}_T策略分析.xlsx".lstrip("_"),
             )
 
             # 日内做T分析
@@ -421,10 +436,11 @@ def main():
                     if all_signals:
                         if len(all_signals) == 1:
                             # 单日期: 生成单个Excel
+                            signal_single_date = t_analysis_dates[0]
+                            signal_single_name = config.get("stock_name", "")
                             signal_output = os.path.join(
-                                t_analysis_dir,
-                                config.get("output_file", "report")
-                                .replace(".xlsx", f"_波段T信号_{t_analysis_dates[0]}.xlsx"),
+                                t_signal_dir,
+                                f"{signal_single_date}_{signal_single_name}_波段T信号.xlsx",
                             )
                             generate_current_signal_excel(
                                 all_signals[0],
@@ -443,10 +459,10 @@ def main():
                         else:
                             # 多日期: 生成合并Excel（仅交易日）
                             date_label = f"{valid_dates[0]}_{valid_dates[-1]}"
+                            signal_multi_name = config.get("stock_name", "")
                             consolidated_output = os.path.join(
-                                t_analysis_dir,
-                                config.get("output_file", "report")
-                                .replace(".xlsx", f"_波段T信号_{date_label}.xlsx"),
+                                t_signal_dir,
+                                f"{valid_dates[0]}_{signal_multi_name}_波段T信号_{valid_dates[-1]}.xlsx",
                             )
                             generate_consolidated_signal_excel(
                                 all_signals, valid_dates,
@@ -508,12 +524,12 @@ def main():
                         print(f"      密集区间: {' | '.join(parts)}")
 
             # 生成分布分析Excel
-            # 获取数据时间范围（data 按日期降序，最新在前）
             data_dates = [r.get('日期', '') for r in data if r.get('日期')]
-            dist_time_suffix = f"_{data_dates[-1]}_{data_dates[0]}" if data_dates else ""
+            dist_latest = data_dates[0] if data_dates else ""
+            dist_stock_name = config.get("stock_name", "")
             dist_output = os.path.join(
-                t_analysis_dir,
-                config.get("output_file", "report").replace(".xlsx", f"_波段涨跌幅分布{dist_time_suffix}.xlsx"),
+                amplitude_dir,
+                f"{dist_latest}_{dist_stock_name}_波段涨跌幅分布.xlsx".lstrip("_"),
             )
             if data_dates:
                 data_time_range = f"{data_dates[-1]} ~ {data_dates[0]}"
@@ -559,15 +575,15 @@ def main():
             latest_date_str = data[0].get("日期", datetime.now().strftime("%Y-%m-%d")) if data else datetime.now().strftime("%Y-%m-%d")
             stock_code_short = config["stock_code"].replace(".SZ", "").replace(".SH", "")
             stock_name_short = config.get("stock_name", stock_code_short)
-            md_filename = f"{latest_date_str}{stock_name_short}买卖建议报告.md"
-            md_file = os.path.join(report_dir, md_filename)
+            md_filename = f"{latest_date_str}_{stock_name_short}_买卖建议报告.md"
+            md_file = os.path.join(buy_sell_dir, md_filename)
             with open(md_file, "w", encoding="utf-8") as f:
                 f.write(md_report)
             print(f"  [买卖建议] 已保存: {os.path.abspath(md_file)}")
 
             # ── 同步转图片 ──
             img_filename = md_filename.replace(".md", ".png")
-            img_file = os.path.join(photo_dir, img_filename)
+            img_file = os.path.join(buy_sell_dir, img_filename)
             print(f"  [转图片] 正在生成报告图片...")
             if md_to_image(md_report, img_file):
                 print(f"  [转图片] 已保存: {os.path.abspath(img_file)}")
@@ -585,9 +601,8 @@ def main():
     print(f"[汇总] 全部完成！成功 {total_ok} 只，失败 {total_fail} 只")
     if total_ok > 0:
         print(f"       Excel数据: {os.path.abspath(data_dir)}")
+        print(f"       分析报告: {os.path.abspath(output_dir)}")
         print(f"       缓存数据: {os.path.abspath(cache_dir)}")
-        print(f"       分析报告: {os.path.abspath(report_dir)}")
-        print(f"       T策略分析: {os.path.abspath(t_analysis_dir)}")
     print(f"{'=' * 50}")
 
 
