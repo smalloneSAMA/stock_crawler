@@ -1555,19 +1555,39 @@ def _detect_trend_phases(prices: List[float], threshold_pct: float = 5.0) -> Lis
     if n < 10:
         return fills
 
-    # 1. 找初始方向（看前15天内是否有超过threshold_pct的变动）
+    # ── 1. 找初始方向（使用较低阈值，适应低波动股票）──
+    #    先用 2% 在前30天内检测方向；若仍失败，利用整体价格变化方向作为保底
     direction = None  # 1=up, -1=down
-    for i in range(1, min(15, n)):
+    # 初始检测用小阈值（至少 2%，但不超过 threshold_pct）
+    init_threshold = min(threshold_pct, 2.0)
+    # 扩大初始检测窗口到 30 天（或整个序列）
+    initial_lookback = min(30, n)
+    for i in range(1, initial_lookback):
         chg = (prices[i] - prices[0]) / prices[0] * 100
-        if chg > threshold_pct:
+        if chg > init_threshold:
             direction = 1
             break
-        elif chg < -threshold_pct:
+        elif chg < -init_threshold:
             direction = -1
             break
 
+    # 如果前30天仍未检测到方向，使用整体价格变化作为方向
     if direction is None:
-        return fills  # 没有明确方向，全部横盘
+        total_chg = (prices[-1] - prices[0]) / prices[0] * 100
+        if abs(total_chg) > 1.0:  # 整体变化超过 1% 就算有方向
+            direction = 1 if total_chg > 0 else -1
+        else:
+            # 整体横盘，再尝试用前后半段均值比较
+            mid = n // 2
+            first_half_avg = sum(prices[:mid]) / mid
+            second_half_avg = sum(prices[mid:]) / (n - mid)
+            if first_half_avg > 0:
+                avg_chg = (second_half_avg - first_half_avg) / first_half_avg * 100
+                if abs(avg_chg) > 1.0:
+                    direction = 1 if avg_chg > 0 else -1
+
+    if direction is None:
+        return fills  # 确实横盘，全部标记横盘
 
     # 2. 扫描找出所有转折点（峰和谷）
     turning_pts = []   # [(index, type), ...]  type='peak' or 'trough'
