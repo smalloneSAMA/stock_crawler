@@ -395,56 +395,67 @@ def _forward_return(closes: List[float], signal_idx: int, lookahead: int) -> flo
     return (closes[signal_idx + lookahead] - cur) / cur * 100
 
 
-def _compute_dynamic_thresholds(closes: List[float], period: int, n_thresholds: int = 6) -> List[int]:
+def _compute_dynamic_thresholds(closes: List[float], period: int, n_thresholds: int = 6) -> Dict[str, List[int]]:
     """
-    根据股票自身的历史涨跌幅分布，动态计算该周期的阈值列表
+    根据股票自身的历史涨跌幅分布，分别计算正T和反T的阈值列表
 
-    对指定 period，计算所有 N 日区间涨跌幅的绝对值，
-    然后按百分位取 n_thresholds 个阈值。
-    百分位点均匀分布，覆盖从常见波动到极端波动。
+    正T阈值 ← 从下跌幅度分布取百分位
+    反T阈值 ← 从上涨幅度分布取百分位
 
-    Returns: 阈值列表（整数百分比），如 [2, 4, 6, 9, 12, 17]
+    分开计算的原因：A股市场涨跌分布往往不对称（急跌慢涨或急涨慢跌），
+    共用一套阈值会导致一侧信号过多、另一侧信号过少的问题。
+
+    Returns: {"正T": [2, 4, 6, ...], "反T": [3, 5, 8, ...]}
     """
     n = len(closes)
+    fallback = {"正T": [3, 5, 8, 10, 15, 20], "反T": [3, 5, 8, 10, 15, 20]}
     if n <= period:
-        return [3, 5, 8, 10, 15, 20]  # 数据不足时回退到默认值
+        return fallback
 
-    # 计算该周期所有 N 日涨跌幅绝对值
-    abs_returns = []
+    # 分别收集涨幅和跌幅（绝对值）
+    up_returns = []
+    down_returns = []
     for i in range(period, n):
         prev = closes[i - period]
         if prev > 0:
-            ret = abs((closes[i] - prev) / prev * 100)
-            abs_returns.append(ret)
+            ret = (closes[i] - prev) / prev * 100
+            if ret > 0:
+                up_returns.append(ret)
+            elif ret < 0:
+                down_returns.append(abs(ret))
 
-    if len(abs_returns) < 20:
-        return [3, 5, 8, 10, 15, 20]
+    if len(up_returns) < 20 or len(down_returns) < 20:
+        return fallback
 
-    abs_returns.sort()
-    total = len(abs_returns)
+    up_returns.sort()
+    down_returns.sort()
 
-    # 均匀分布的百分位点，从略高于中位数的位置开始
-    # 这样阈值不会太低（避免日常噪声也被算作信号）
+    def _percentile_ths(data_sorted: List[float], percentiles: List[float]) -> List[int]:
+        """从排序数据取百分位阈值（整数，向上取整，去重递增）"""
+        total = len(data_sorted)
+        thresholds = []
+        for p in percentiles:
+            idx = int(total * p / 100)
+            idx = min(idx, total - 1)
+            val = data_sorted[idx]
+            th = max(2, int(val) + (1 if val - int(val) > 0.01 else 0))
+            thresholds.append(th)
+        # 去重并确保递增
+        unique = []
+        for t in thresholds:
+            if not unique or t > unique[-1]:
+                unique.append(t)
+            elif t == unique[-1]:
+                unique.append(t + 1)
+        return unique[:n_thresholds]
+
+    # 正T需要下跌幅度足够大 → 从跌幅分布取百分位
+    # 反T需要上涨幅度足够大 → 从涨幅分布取百分位
     percentiles = [35, 50, 62, 74, 85, 93]
-    thresholds = []
-    for p in percentiles:
-        idx = int(total * p / 100)
-        idx = min(idx, total - 1)
-        val = abs_returns[idx]
-        # 向上取整到整数，且至少为 2
-        th = max(2, int(val) + (1 if val - int(val) > 0.01 else 0))
-        thresholds.append(th)
+    zt_thresholds = _percentile_ths(down_returns, percentiles)
+    ft_thresholds = _percentile_ths(up_returns, percentiles)
 
-    # 去重并确保递增
-    unique = []
-    for t in thresholds:
-        if not unique or t > unique[-1]:
-            unique.append(t)
-        elif t == unique[-1]:
-            # 如果相同，加 1 偏移
-            unique.append(t + 1)
-
-    return unique[:n_thresholds]
+    return {"正T": zt_thresholds, "反T": ft_thresholds}
 
 
 def analyze_swing_t(data: List[Dict]) -> Dict:
@@ -481,7 +492,7 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
     result["总交易日"] = n
     result["时间范围"] = f"{data_asc[0].get('日期','?')} ~ {data_asc[-1].get('日期','?')}"
 
-    # 对每个周期动态计算阈值
+    # 对每个周期动态计算阈值（正T/反T分开）
     dynamic_thresholds = {}
     for period in SWING_PERIODS:
         dynamic_thresholds[period] = _compute_dynamic_thresholds(closes, period)
@@ -490,9 +501,12 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
     for period in SWING_PERIODS:
         lookahead = max(3, int(period * SIGNAL_LOOKAHEAD_RATIO))
         period_result = {}
-        thresholds = dynamic_thresholds[period]
+        th_dict = dynamic_thresholds[period]
+        zt_ths = th_dict.get("正T", [3, 5, 8, 10, 15, 20])
+        ft_ths = th_dict.get("反T", [3, 5, 8, 10, 15, 20])
+        all_ths = sorted(set(zt_ths + ft_ths))
 
-        for threshold in thresholds:
+        for threshold in all_ths:
             zt_signals = []   # 正T信号（买入）
             ft_signals = []   # 反T信号（卖出）
 
@@ -500,8 +514,8 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
             for i in range(period, n - lookahead):
                 ret = _swing_return(closes, i, period)
 
-                # ── 正T信号：N日跌幅 >= threshold% ──
-                if ret <= -threshold:
+                # ── 正T信号：N日跌幅 >= zt阈值% ──
+                if threshold in zt_ths and ret <= -threshold:
                     fwd_ret = _forward_return(closes, i, lookahead)
                     # 准备技术指标（在信号点 i 处计算）
                     seg_closes = closes[:i + 1]
@@ -524,8 +538,8 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
                         "收盘价_信号时": closes[i],
                     })
 
-                # ── 反T信号：N日涨幅 >= threshold% ──
-                if ret >= threshold:
+                # ── 反T信号：N日涨幅 >= ft阈值% ──
+                if threshold in ft_ths and ret >= threshold:
                     fwd_ret = _forward_return(closes, i, lookahead)
                     seg_closes = closes[:i + 1]
                     seg_volumes = volumes[:i + 1]
@@ -660,8 +674,9 @@ def analyze_swing_t(data: List[Dict]) -> Dict:
     for period in SWING_PERIODS:
         best_zt = {"threshold": 0, "胜率": 0}
         best_ft = {"threshold": 0, "胜率": 0}
-        thresholds = dynamic_thresholds[period]
-        for th in thresholds:
+        th_dict = dynamic_thresholds[period]
+        all_ths = sorted(set(th_dict.get("正T", []) + th_dict.get("反T", [])))
+        for th in all_ths:
             td = result[period][f"threshold_{th}"]
             if td["正T"]["胜率%"] > best_zt["胜率"] and td["正T"]["信号次数"] >= 3:
                 best_zt = {"threshold": th, "胜率": td["正T"]["胜率%"], "信号次数": td["正T"]["信号次数"]}
@@ -990,19 +1005,31 @@ def generate_t_excel(intraday_result: Dict, swing_result: Dict, stock_name: str,
             detail_headers = ["阈值%", "方向", "信号次数", "获胜次数", "胜率%", "平均信号后收益%"]
             detail_widths = [8, 8, 10, 10, 8, 16]
             detail_rows = []
-            period_ths = dyn_thresholds_all.get(period, SWING_THRESHOLDS)
-            for th in period_ths:
+            th_dict = dyn_thresholds_all.get(period, {"正T": SWING_THRESHOLDS, "反T": SWING_THRESHOLDS})
+            zt_ths = th_dict.get("正T", [])
+            ft_ths = th_dict.get("反T", [])
+            # 正T行：使用正T专属阈值
+            for th in zt_ths:
                 td = period_data.get(f"threshold_{th}", {})
-                for direction in ["正T", "反T"]:
-                    dd = td.get(direction, {})
-                    detail_rows.append([
-                        th,
-                        direction,
-                        dd.get("信号次数", 0),
-                        dd.get("获胜次数", 0),
-                        dd.get("胜率%", 0),
-                        dd.get("平均信号后收益%", 0),
-                    ])
+                dd = td.get("正T", {})
+                detail_rows.append([
+                    th, "正T",
+                    dd.get("信号次数", 0),
+                    dd.get("获胜次数", 0),
+                    dd.get("胜率%", 0),
+                    dd.get("平均信号后收益%", 0),
+                ])
+            # 反T行：使用反T专属阈值
+            for th in ft_ths:
+                td = period_data.get(f"threshold_{th}", {})
+                dd = td.get("反T", {})
+                detail_rows.append([
+                    th, "反T",
+                    dd.get("信号次数", 0),
+                    dd.get("获胜次数", 0),
+                    dd.get("胜率%", 0),
+                    dd.get("平均信号后收益%", 0),
+                ])
             sheets_xml.append(_build_sheet_xml(f"波段{period}日", detail_headers, detail_rows, detail_widths))
             sheet_names.append(f"波段{period}日")
 
@@ -1012,19 +1039,27 @@ def generate_t_excel(intraday_result: Dict, swing_result: Dict, stock_name: str,
         vol_widths = [8, 8, 8, 10, 8, 8]
         for period in SWING_PERIODS:
             period_data = swing_result.get(period, {})
-            period_ths = dyn_thresholds_all.get(period, SWING_THRESHOLDS)
-            for th in period_ths:
+            th_dict = dyn_thresholds_all.get(period, {"正T": SWING_THRESHOLDS, "反T": SWING_THRESHOLDS})
+            zt_ths = th_dict.get("正T", [])
+            ft_ths = th_dict.get("反T", [])
+            # 正T量能：使用正T专属阈值（跳过N/A，N/A=数据不足无参考价值）
+            for th in zt_ths:
                 td = period_data.get(f"threshold_{th}", {})
-                for direction in ["正T", "反T"]:
-                    dd = td.get(direction, {})
-                    vol_dist = dd.get("量能分布", {})
-                    for vol_status, info in sorted(vol_dist.items()):
-                        vol_rows.append([
-                            f"{period}日", direction, th,
-                            vol_status,
-                            info.get("次数", 0),
-                            info.get("胜率%", 0),
-                        ])
+                dd = td.get("正T", {})
+                vol_dist = dd.get("量能分布", {})
+                for vol_status, info in sorted(vol_dist.items()):
+                    if vol_status == "N/A":
+                        continue
+                    vol_rows.append([f"{period}日", "正T", th, vol_status, info.get("次数", 0), info.get("胜率%", 0)])
+            # 反T量能：使用反T专属阈值（跳过N/A）
+            for th in ft_ths:
+                td = period_data.get(f"threshold_{th}", {})
+                dd = td.get("反T", {})
+                vol_dist = dd.get("量能分布", {})
+                for vol_status, info in sorted(vol_dist.items()):
+                    if vol_status == "N/A":
+                        continue
+                    vol_rows.append([f"{period}日", "反T", th, vol_status, info.get("次数", 0), info.get("胜率%", 0)])
         if vol_rows:
             sheets_xml.append(_build_sheet_xml("量能分析", vol_headers, vol_rows, vol_widths))
             sheet_names.append("量能分析")
@@ -1035,19 +1070,23 @@ def generate_t_excel(intraday_result: Dict, swing_result: Dict, stock_name: str,
         div_widths = [8, 8, 8, 10, 8, 8]
         for period in SWING_PERIODS:
             period_data = swing_result.get(period, {})
-            period_ths = dyn_thresholds_all.get(period, SWING_THRESHOLDS)
-            for th in period_ths:
+            th_dict = dyn_thresholds_all.get(period, {"正T": SWING_THRESHOLDS, "反T": SWING_THRESHOLDS})
+            zt_ths = th_dict.get("正T", [])
+            ft_ths = th_dict.get("反T", [])
+            # 正T背离：使用正T专属阈值
+            for th in zt_ths:
                 td = period_data.get(f"threshold_{th}", {})
-                for direction in ["正T", "反T"]:
-                    dd = td.get(direction, {})
-                    div_dist = dd.get("背离分布", {})
-                    for div_type, info in sorted(div_dist.items()):
-                        div_rows.append([
-                            f"{period}日", direction, th,
-                            div_type,
-                            info.get("次数", 0),
-                            info.get("胜率%", 0),
-                        ])
+                dd = td.get("正T", {})
+                div_dist = dd.get("背离分布", {})
+                for div_type, info in sorted(div_dist.items()):
+                    div_rows.append([f"{period}日", "正T", th, div_type, info.get("次数", 0), info.get("胜率%", 0)])
+            # 反T背离：使用反T专属阈值
+            for th in ft_ths:
+                td = period_data.get(f"threshold_{th}", {})
+                dd = td.get("反T", {})
+                div_dist = dd.get("背离分布", {})
+                for div_type, info in sorted(div_dist.items()):
+                    div_rows.append([f"{period}日", "反T", th, div_type, info.get("次数", 0), info.get("胜率%", 0)])
         if div_rows:
             sheets_xml.append(_build_sheet_xml("背离分析", div_headers, div_rows, div_widths))
             sheet_names.append("背离分析")
@@ -1263,8 +1302,9 @@ def analyze_current_swing_signal(
 
         if period_key in swing_result:
             # 使用动态阈值（从 swing_result 中读取），而不是硬编码的 SWING_THRESHOLDS
-            dyn_thresholds = swing_result.get("_动态阈值", {}).get(period, SWING_THRESHOLDS)
-            for th in dyn_thresholds:
+            th_dict = swing_result.get("_动态阈值", {}).get(period, {"正T": SWING_THRESHOLDS, "反T": SWING_THRESHOLDS})
+            all_ths = sorted(set(th_dict.get("正T", []) + th_dict.get("反T", [])))
+            for th in all_ths:
                 tk = f"threshold_{th}"
                 if tk in swing_result[period_key]:
                     td = swing_result[period_key][tk]
