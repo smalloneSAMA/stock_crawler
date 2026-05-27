@@ -18,3 +18,6 @@ nul
 err.txt
 out.txt
 run_log.txt
+my_stocks.xlsx
+~$my_stocks.xlsx
+参考报告输出.md
