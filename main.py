@@ -440,7 +440,7 @@ def main():
                             signal_single_name = config.get("stock_name", "")
                             signal_output = os.path.join(
                                 t_signal_dir,
-                                f"{signal_single_date}_{signal_single_name}_波段T信号.xlsx",
+                                f"{signal_single_date}{signal_single_name}波段T信号.xlsx",
                             )
                             generate_current_signal_excel(
                                 all_signals[0],
@@ -462,7 +462,7 @@ def main():
                             signal_multi_name = config.get("stock_name", "")
                             consolidated_output = os.path.join(
                                 t_signal_dir,
-                                f"{valid_dates[0]}_{signal_multi_name}_波段T信号_{valid_dates[-1]}.xlsx",
+                                f"{valid_dates[-1]}{signal_multi_name}波段T信号.xlsx",
                             )
                             generate_consolidated_signal_excel(
                                 all_signals, valid_dates,
