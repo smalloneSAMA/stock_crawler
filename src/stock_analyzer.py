@@ -29,24 +29,43 @@ def _ma(data: List[float], period: int) -> Optional[float]:
 
 
 def _ema(data: List[float], period: int) -> Optional[float]:
-    """指数移动平均"""
+    """指数移动平均（数据最新在前，内部转旧到新顺序计算）"""
     if len(data) < period:
         return None
     k = 2 / (period + 1)
-    ema = sum(data[:period]) / period  # 初始 SMA
-    for i in range(period, len(data)):
-        ema = data[i] * k + ema * (1 - k)
+    # 数据是最新在前，反转成旧到新顺序计算 EMA
+    chrono = list(reversed(data))
+    ema = sum(chrono[:period]) / period  # 初始 SMA（最旧 period 条）
+    for i in range(period, len(chrono)):
+        ema = chrono[i] * k + ema * (1 - k)
     return round(ema, 2)
 
 
 def _macd_direction(closes: List[float]) -> str:
-    """判断MACD方向"""
-    dif = _ema(closes, 12)
-    dea = _ema(closes, 26)
-    if dif is None or dea is None:
+    """
+    判断 MACD 方向
+    标准 MACD: DIF = EMA(close,12)-EMA(close,26), DEA = EMA(DIF,9)
+    """
+    if len(closes) < 26:
         return "数据不足"
+    chrono = list(reversed(closes))
+    n = len(chrono)
+    k12, k26 = 2 / 13, 2 / 27
+    ema12 = sum(chrono[:12]) / 12
+    ema26 = sum(chrono[:26]) / 26
+    dif_series = [ema12 - ema26]
+    for i in range(26, n):
+        ema12 = chrono[i] * k12 + ema12 * (1 - k12)
+        ema26 = chrono[i] * k26 + ema26 * (1 - k26)
+        dif_series.append(ema12 - ema26)
+    dif = dif_series[-1]
+    if len(dif_series) < 9:
+        return "数据不足"
+    k9 = 2 / 10
+    dea = sum(dif_series[:9]) / 9
+    for i in range(9, len(dif_series)):
+        dea = dif_series[i] * k9 + dea * (1 - k9)
     bar = round(dif - dea, 2)
-    # 看最近两期的柱体变化
     if dif > dea and bar > 0:
         return "金叉向上(多头)"
     elif dif < dea and bar < 0:

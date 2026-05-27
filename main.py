@@ -249,6 +249,17 @@ def main():
 
             fetched_new = True
 
+        # ── 统一按 start_date/end_date 过滤 data（缓存可能含额外历史数据）──
+        if data and (start_date or end_date):
+            before = len(data)
+            if start_date:
+                data = [r for r in data if r.get("日期", "") >= start_date]
+            if end_date:
+                data = [r for r in data if r.get("日期", "") <= end_date]
+            after = len(data)
+            if after < before:
+                print(f"  [日期] 按时间范围过滤: {after}/{before} 条 (范围: {start_date or '不限'} ~ {end_date or '不限'})")
+
         # ── 预览数据 ──
         print("\n[预览] 前 3 条:")
         for i, row in enumerate(data[:3], 1):
