@@ -97,6 +97,45 @@ def main():
         else:
             print(f"[配置] 波段T分析日期: {t_analysis_dates[0]} ~ {t_analysis_dates[-1]} (共{len(t_analysis_dates)}天)")
 
+    # ── 日期校验：禁止超过当天 ──
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    # 校验每只股票的 end_date
+    for cfg in configs:
+        ed = cfg.get("end_date", "")
+        if ed and ed > today_str:
+            print(f"  [日期] end_date({ed})超过今天({today_str})，已修正为{today_str}")
+            cfg["end_date"] = today_str
+
+    # 校验 t_end_date 和 t_analysis_dates
+    if t_analysis_dates:
+        # 更新 global_config 中的 t_end_date
+        ge_te = global_config.get("t_end_date", "")
+        if ge_te and ge_te > today_str:
+            print(f"  [日期] t_end_date({ge_te})超过今天({today_str})，已修正为{today_str}")
+            global_config["t_end_date"] = today_str
+            # 重新生成日期列表
+            if global_config.get("t_start_date"):
+                from datetime import timedelta
+                sd = datetime.strptime(global_config["t_start_date"], "%Y-%m-%d")
+                ed = datetime.strptime(today_str, "%Y-%m-%d")
+                dates = []
+                cur = sd
+                while cur <= ed:
+                    dates.append(cur.strftime("%Y-%m-%d"))
+                    cur += timedelta(days=1)
+                global_config["_t_dates"] = dates
+                t_analysis_dates = dates
+
+        # 过滤未来日期（兼容 t_analysis_dates 手动指定了未来日期的情况）
+        filtered = [d for d in t_analysis_dates if d <= today_str]
+        skipped = len(t_analysis_dates) - len(filtered)
+        if skipped:
+            print(f"  [日期] 波段T分析日期中有{skipped}天超过今天({today_str})，已自动过滤")
+            global_config["_t_dates"] = filtered
+            t_analysis_dates = filtered
+
     print_config_list(configs)
 
     # ── 确定输出目录 ──
