@@ -318,7 +318,7 @@ def _try_fetch_with_fallback(stock_code: str, sina_symbol: str, datalen: int) ->
     raise DataFetchError(f"所有数据源均失败，最后错误: {last_error}")
 
 
-def fetch_stock_data(config: Dict) -> List[Dict]:
+def fetch_stock_data(config: Dict, max_records: Optional[int] = None) -> List[Dict]:
     """
     根据配置从多源级联抓取股票日 K 线数据，并计算衍生字段
 
@@ -332,6 +332,8 @@ def fetch_stock_data(config: Dict) -> List[Dict]:
 
     Args:
         config: 配置字典，需包含 stock_code, start_date, end_date 等
+        max_records: 限制只获取最近 N 条记录（用于缓存刷新模式）
+                     设置后忽略 start_date/end_date 过滤，只取最新数据
 
     Returns:
         按日期降序排列的数据列表
@@ -343,13 +345,20 @@ def fetch_stock_data(config: Dict) -> List[Dict]:
     start_date = config.get("start_date", "")
     end_date = config.get("end_date", "")
 
-    print(f"[抓取] 正在抓取 {config.get('stock_name', stock_code)} ({raw_code}) 的数据...")
-    print(f"   数据源: mootdx(通达信) → 新浪财经 → 腾讯财经(保底)")
-    print(f"   时间范围: {start_date or '不限'} ~ {end_date or '不限'}")
+    # 刷新模式：只获取最近 max_records 条，忽略日期范围
+    if max_records is not None:
+        print(f"[抓取] 正在刷新 {config.get('stock_name', stock_code)} ({raw_code}) 最近 {max_records} 条数据...")
+        print(f"   数据源: mootdx(通达信) → 新浪财经 → 腾讯财经(保底)")
+    else:
+        print(f"[抓取] 正在抓取 {config.get('stock_name', stock_code)} ({raw_code}) 的数据...")
+        print(f"   数据源: mootdx(通达信) → 新浪财经 → 腾讯财经(保底)")
+        print(f"   时间范围: {start_date or '不限'} ~ {end_date or '不限'}")
 
     # ── 级联获取 K 线数据 ──
     # 根据起始日期估算所需数据量（约250个交易日/年），最大5000
-    if start_date:
+    if max_records is not None:
+        datalen = max_records
+    elif start_date:
         try:
             sd = datetime.strptime(start_date, "%Y-%m-%d")
             ed = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.today()
@@ -362,11 +371,12 @@ def fetch_stock_data(config: Dict) -> List[Dict]:
     records = _try_fetch_with_fallback(stock_code, sina_symbol, datalen)
     print(f"[返回] 共 {len(records)} 条原始数据")
 
-    # ── 按时间范围过滤 ──
-    if start_date:
-        records = [r for r in records if r["日期"] >= start_date]
-    if end_date:
-        records = [r for r in records if r["日期"] <= end_date]
+    # ── 按时间范围过滤（刷新模式跳过日期过滤，保留最新 N 条）──
+    if max_records is None:
+        if start_date:
+            records = [r for r in records if r["日期"] >= start_date]
+        if end_date:
+            records = [r for r in records if r["日期"] <= end_date]
 
     if not records:
         raise DataFetchError("过滤后无数据，请检查日期范围")

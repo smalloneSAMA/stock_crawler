@@ -249,6 +249,34 @@ def main():
 
             fetched_new = True
 
+        # ── 优化: 不论缓存状态，始终抓取最近10个交易日数据刷新缓存 ──
+        # 确保最新数据（如复权调整、分红除权等）能及时更新
+        if use_cache and not args.no_cache:
+            try:
+                # 多取几条确保覆盖10个有效交易日（避开周末/节假日）
+                refresh_result = fetch_stock_data(config, max_records=15)
+                if refresh_result:
+                    # 只保留最近10个交易日用于合并
+                    latest_10 = refresh_result[:10]
+                    # 刷新财务数据
+                    try:
+                        latest_10 = enrich_kline_with_financials(
+                            kline_data=latest_10,
+                            stock_code=config["stock_code"],
+                        )
+                    except FinancialFetchError as e:
+                        print(f"  [警告] 刷新财务指标失败: {e}")
+
+                    # 合并到主数据（新数据覆盖旧数据）
+                    data = merge_data(data, latest_10)
+                    # 保存到缓存
+                    save_to_cache(cache_path, data)
+                    print(f"  [刷新] 最近10个交易日数据已刷新并存入缓存（共 {len(data)} 条）")
+            except DataFetchError as e:
+                print(f"  [刷新] 跳过（数据源不可用）: {e}")
+            except Exception as e:
+                print(f"  [刷新] 跳过（意外错误）: {e}")
+
         # ── 统一按 start_date/end_date 过滤 data（缓存可能含额外历史数据）──
         if data and (start_date or end_date):
             before = len(data)
